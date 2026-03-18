@@ -1,0 +1,12 @@
+{
+  "version": "v1",
+  "instruments": [
+    {
+      "midi_program": 40,
+      "name": "Violin",
+      "category": "Strings",
+      "model_file": "violin_v1.pt",
+      "model_type": "pytorch"
+    }
+  ]
+}

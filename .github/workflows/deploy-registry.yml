@@ -1,0 +1,51 @@
+name: Deploy Model Registry to GCS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "registry.json"
+      - ".github/workflows/deploy-registry.yml"
+  workflow_dispatch:
+
+env:
+  GCS_BUCKET: gs://tutti-ai-models/v1/
+  GKE_CLUSTER: tutti-cluster
+  GKE_ZONE: us-central1-a
+
+jobs:
+  deploy-registry:
+    name: 📤 Deploy registry.json
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Upload registry.json to GCS
+        run: |
+          echo "Uploading registry.json to ${{ env.GCS_BUCKET }}..."
+          gsutil cp registry.json ${{ env.GCS_BUCKET }}registry.json
+          echo "Upload complete."
+
+      - name: Get GKE Credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.GKE_ZONE }}
+
+      - name: Restart AI Server Pods
+        run: |
+          echo "Triggering rollout restart for AI Server to fetch new registry..."
+          kubectl rollout restart deployment/ai-server -n tutti
+          kubectl rollout status deployment/ai-server -n tutti --timeout=120s
