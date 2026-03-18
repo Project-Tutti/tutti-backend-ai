@@ -4,7 +4,6 @@ metadata:
   name: ai-server
   namespace: tutti
 spec:
-  replicas: 1
   selector:
     matchLabels:
       app: ai-server

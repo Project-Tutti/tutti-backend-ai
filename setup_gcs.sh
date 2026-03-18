@@ -42,10 +42,10 @@ kubectl create serviceaccount $K8S_SA_NAME -n $K8S_NAMESPACE 2>/dev/null || true
 # 여기서는 편의상 프로젝트에 이미 있는 SA를 사용하거나 따로 만들어야 합니다.
 GSA_EMAIL="${GCP_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 
-# IAM SA에 버킷 객체 뷰어 권한 부여 (딱 이 버킷만 읽을 수 있도록 최소 권한 적용)
+# IAM SA에 버킷 객체 관리자 권한 부여 (GitHub Actions에서 업로드도 해야 하므로 Admin 부여)
 gcloud storage buckets add-iam-policy-binding gs://$BUCKET_NAME \
     --member="serviceAccount:$GSA_EMAIL" \
-    --role="roles/storage.objectViewer"
+    --role="roles/storage.objectAdmin"
 
 # IAM SA와 Kubernetes SA 연동 (Workload Identity)
 gcloud iam service-accounts add-iam-policy-binding $GSA_EMAIL \
