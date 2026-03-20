@@ -1,0 +1,32 @@
+# Git
+.git/
+.gitignore
+
+# GitHub Actions / CI
+.github/
+
+# Kubernetes manifests (배포 시 별도 적용)
+k8s/
+
+# 로컬 문서 / 노트북
+local_docs/
+*.md
+LICENSE
+
+# 셸 스크립트 (인프라 세팅용, 런타임 불필요)
+setup_*.sh
+
+# Python 캐시
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# 환경변수 / IDE
+.env
+.env.*
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
