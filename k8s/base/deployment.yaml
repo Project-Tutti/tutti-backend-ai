@@ -57,7 +57,7 @@ spec:
             limits:
               cpu: "2000m"
               memory: "4Gi"
-              # nvidia.com/gpu: 1 # TODO: GPU quota 승인 후 원복
+              nvidia.com/gpu: 1
           livenessProbe:
             httpGet:
               path: /health
@@ -77,14 +77,13 @@ spec:
             initialDelaySeconds: 60 # 모델 로딩 시간 고려
             periodSeconds: 10
             failureThreshold: 18 # 최대 3분 대기
-      # TODO: GPU quota 승인 후 아래 주석 해제
-      # nodeSelector:
-      #   cloud.google.com/gke-accelerator: nvidia-tesla-t4
-      # tolerations:
-      #   - key: "nvidia.com/gpu"
-      #     operator: "Equal"
-      #     value: "present"
-      #     effect: "NoSchedule"
+      nodeSelector:
+        cloud.google.com/gke-accelerator: nvidia-tesla-t4
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Equal"
+          value: "present"
+          effect: "NoSchedule"
       volumes:
         - name: model-volume
           emptyDir:

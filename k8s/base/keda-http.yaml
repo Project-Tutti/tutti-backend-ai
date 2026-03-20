@@ -13,5 +13,5 @@ spec:
     service: ai-server
     port: 8000
   replicas:
-    min: 1 # TODO: GPU 모드 전환 시 0으로 원복
+    min: 0
     max: 3
