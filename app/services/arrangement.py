@@ -37,9 +37,9 @@ async def process_arrangement(request: ArrangeRequest, registry):
             },
         )
 
-        # Step 2: MIDI 파싱 (20%)
+        # Step 2: MIDI 파싱 — anticipation 이벤트 + controls 추출 (20%)
         logger.info(f"[{job_id}] Step 2: Parsing MIDI")
-        tracks = parse_midi(midi_path)
+        events, controls, song_length = parse_midi(midi_path)
         await send_callback(
             cb,
             secret,
@@ -52,32 +52,34 @@ async def process_arrangement(request: ArrangeRequest, registry):
         )
 
         # Step 3: 트랙별 추론 (20%~80%, 균등 분배)
-        logger.info(f"[{job_id}] Step 3: Inference Loop")
+        #   controls: 원곡의 모든 악기 이벤트를 컨텍스트로 제공
+        #   song_length: 곡 길이(초) — 생성 종료 시점 결정
+        logger.info(f"[{job_id}] Step 3: Inference Loop ({total_tracks} tracks)")
         results = []
+        target_instrument_ids = []
         for i, mapping in enumerate(request.mappings):
             try:
                 model = registry.get_model(mapping.targetInstrumentId)
-                track_data = (
-                    tracks[mapping.trackIndex]
-                    if mapping.trackIndex < len(tracks)
-                    else []
-                )
-
-                song_length_seconds = 180.0
 
                 logger.info(
-                    f"[{job_id}] Inferencing track {mapping.trackIndex} for target {mapping.targetInstrumentId}"
+                    f"[{job_id}] Inferencing track {mapping.trackIndex} "
+                    f"for target instrument {mapping.targetInstrumentId}"
                 )
+
+                # controls를 source_midi_events로 전달하여
+                # 모델이 원곡의 맥락을 참조하며 생성하도록 함
                 loop = asyncio.get_running_loop()
                 result = await loop.run_in_executor(
                     None,
                     run_inference,
                     model,
                     mapping.targetInstrumentId,
-                    track_data,
-                    song_length_seconds,
+                    controls,
+                    song_length,
                 )
                 results.append(result)
+                target_instrument_ids.append(mapping.targetInstrumentId)
+
             except Exception as e:
                 logger.error(
                     f"[{job_id}] Failed to infer track {mapping.trackIndex}: {e}"
@@ -97,16 +99,12 @@ async def process_arrangement(request: ArrangeRequest, registry):
                 },
             )
 
-        # Step 4: 결과 병합 (90%)
-        logger.info(f"[{job_id}] Step 4: Merging results")
-        merged_midi_path = Path(settings.RESULTS_DIR) / f"{job_id}.mid"
-        merged_midi_path.parent.mkdir(parents=True, exist_ok=True)
-
-        merge_tracks(results, midi_path)
-
-        # TODO: 실제 merge_tracks 결과를 파일로 저장하도록 수정 필요
-        with open(merged_midi_path, "wb") as f:
-            f.write(b"MOCK_MIDI_DATA")
+        # Step 4: 결과 병합 — 생성된 이벤트들을 원본 MIDI에 주입 (90%)
+        logger.info(f"[{job_id}] Step 4: Merging {len(results)} tracks")
+        output_path = Path(settings.RESULTS_DIR) / f"{job_id}.mid"
+        merged_midi_path = merge_tracks(
+            results, midi_path, target_instrument_ids, output_path
+        )
 
         await send_callback(
             cb,
@@ -120,8 +118,6 @@ async def process_arrangement(request: ArrangeRequest, registry):
         )
 
         # Step 5: 완료 — MIDI 파일을 직접 첨부하여 콜백 전송 (100%)
-        # KEDA Zero-Scaling 환경에서도 안전: 파일이 메인 서버에 직접 도착하므로
-        # AI 파드가 삭제되어도 결과물이 유실되지 않습니다.
         logger.info(f"[{job_id}] Step 5: Sending result file to main-server")
         await send_callback_with_file(
             cb,
