@@ -28,5 +28,9 @@ __pycache__/
 .vscode/
 .idea/
 
+# Docker Compose / Nginx (이미지에 포함 불필요)
+docker-compose.yml
+nginx/
+
 # macOS
 .DS_Store

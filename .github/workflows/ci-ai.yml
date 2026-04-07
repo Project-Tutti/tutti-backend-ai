@@ -5,10 +5,9 @@ on:
     branches: [main]
     paths:
       - "app/**"
-      - "k8s/**"
       - "Dockerfile"
       - "requirements.txt"
-      - ".github/workflows/ci.yml"
+      - ".github/workflows/ci-ai.yml"
   pull_request:
     branches: [main]
     paths:
@@ -22,8 +21,6 @@ on:
 env:
   REGISTRY: us-central1-docker.pkg.dev
   IMAGE_NAME: ${{ secrets.GCP_PROJECT_ID }}/tutti/ai-server
-  GKE_CLUSTER: tutti-cluster
-  GKE_ZONE: us-central1-a
 
 jobs:
   # ================================================================
@@ -76,53 +73,37 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ================================================================
-  # Job 2: Deploy — GKE에 Kustomize로 배포
+  # Job 2: Deploy — SSH로 온프레미스 서버에 배포
   # ================================================================
-  deploy:
-    name: 🚀 Deploy to GKE
+  deploy-onprem:
+    name: 🚀 Deploy to On-Premise
     needs: build-and-push
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
     environment: production
     steps:
-      - uses: actions/checkout@v4
-
-      # ── GCP 인증 ──
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      # ── SSH로 학교 서버에 접속하여 배포 ──
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
         with:
-          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          host: ${{ secrets.ONPREM_HOST }}
+          username: ${{ secrets.ONPREM_USER }}
+          password: ${{ secrets.ONPREM_PASSWORD }}
+          script: |
+            cd ~/tutti-backend-ai
 
-      # ── GKE Credentials ──
-      - name: Get GKE credentials
-        uses: google-github-actions/get-gke-credentials@v2
-        with:
-          cluster_name: ${{ env.GKE_CLUSTER }}
-          location: ${{ env.GKE_ZONE }}
+            echo "📦 Pulling latest image..."
+            docker compose pull ai-server
 
-      # ── Kustomize로 이미지 태그 업데이트 & 배포 ──
-      - name: Deploy with Kustomize
-        run: |
-          cd k8s/base
+            echo "🔄 Restarting services..."
+            docker compose up -d --scale ai-server=2
 
-          # 이미지 태그를 현재 커밋 SHA로 업데이트
-          kustomize edit set image \
-            REGION-docker.pkg.dev/PROJECT_ID/tutti/ai-server=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image-tag }}
+            echo "⏳ Waiting for health checks..."
+            sleep 30
 
-          # Kustomize build & apply
-          kubectl apply -k .
+            echo "📋 Service status:"
+            docker compose ps
 
-      # ── 배포 상태 확인 ──
-      - name: Verify deployment
-        run: |
-          echo "⏳ Waiting for ai-server rollout..."
-          kubectl rollout status deployment/ai-server -n tutti --timeout=300s
-
-          echo ""
-          echo "✅ Deployment successful!"
-          echo "📋 Current pods:"
-          kubectl get pods -l app=ai-server -n tutti -o wide
+            echo ""
+            echo "🏥 Health check:"
+            curl -sf http://localhost:8080/health && echo " ✅ OK" || echo " ❌ FAIL"

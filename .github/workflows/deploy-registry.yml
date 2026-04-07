@@ -1,4 +1,4 @@
-name: Deploy Model Registry to GCS
+name: Deploy Model Registry
 
 on:
   push:
@@ -8,44 +8,39 @@ on:
       - ".github/workflows/deploy-registry.yml"
   workflow_dispatch:
 
-env:
-  GCS_BUCKET: gs://tutti-ai-models/v1/
-  GKE_CLUSTER: tutti-cluster
-  GKE_ZONE: us-central1-a
-
 jobs:
   deploy-registry:
     name: 📤 Deploy registry.json
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
     steps:
+      # ── SSH로 학교 서버의 registry.json 업데이트 ──
       - uses: actions/checkout@v4
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      - name: Deploy registry via SSH
+        uses: appleboy/ssh-action@v1
         with:
-          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          host: ${{ secrets.ONPREM_HOST }}
+          username: ${{ secrets.ONPREM_USER }}
+          password: ${{ secrets.ONPREM_PASSWORD }}
+          script: |
+            cd ~/tutti-backend-ai
 
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+            echo "📥 Pulling latest registry.json from git..."
+            git pull origin main
 
-      - name: Upload registry.json to GCS
-        run: |
-          echo "Uploading registry.json to ${{ env.GCS_BUCKET }}..."
-          gsutil cp registry.json ${{ env.GCS_BUCKET }}registry.json
-          echo "Upload complete."
+            echo "📋 Updated registry.json:"
+            cat models/registry.json 2>/dev/null || cat registry.json
 
-      - name: Get GKE Credentials
-        uses: google-github-actions/get-gke-credentials@v2
-        with:
-          cluster_name: ${{ env.GKE_CLUSTER }}
-          location: ${{ env.GKE_ZONE }}
+            echo ""
+            echo "🔄 Restarting AI servers to reload model registry..."
+            docker compose restart ai-server
 
-      - name: Restart AI Server Pods
-        run: |
-          echo "Triggering rollout restart for AI Server to fetch new registry..."
-          kubectl rollout restart deployment/ai-server -n tutti
-          kubectl rollout status deployment/ai-server -n tutti --timeout=120s
+            echo "⏳ Waiting for health checks..."
+            sleep 30
+
+            echo "📋 Service status:"
+            docker compose ps
+
+            echo ""
+            echo "🏥 Health check:"
+            curl -sf http://localhost:8080/health && echo " ✅ OK" || echo " ❌ FAIL"
