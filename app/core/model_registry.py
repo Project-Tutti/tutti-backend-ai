@@ -1,112 +1,121 @@
+"""
+model_registry.py
+다중 모델 지원 레지스트리.
+
+현재는 통합 Qwen2.5 모델 1개만 사용하지만,
+향후 모델 추가 시 registry.json + modelType으로 선택할 수 있는 구조를 유지합니다.
+"""
+
 import json
 import logging
+from dataclasses import dataclass, field
 from typing import Any
 from pathlib import Path
-from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
 
-class InstrumentConfig(BaseModel):
-    midi_program: int
+@dataclass
+class LoadedModel:
+    """로드된 모델과 관련 리소스를 묶는 컨테이너"""
     name: str
-    category: str
-    model_file: str
-    model_type: str
+    model_type: str           # "qwen2.5", 향후 추가 가능
+    model: Any = None         # 실제 모델 인스턴스
+    vocab: dict = field(default_factory=dict)
+    vocab_r: dict = field(default_factory=dict)
+    device: str = "cuda"
 
 
 class ModelRegistry:
-    """JSON 설정 파일 기반 모델 레지스트리."""
+    """다중 모델 지원 레지스트리.
+
+    현재는 통합 모델 1개만 로드하지만,
+    메인 서버가 modelType으로 모델을 선택할 수 있는 구조를 유지합니다.
+
+    향후 모델 추가 시:
+    1. registry.json에 새 모델 엔트리 추가
+    2. load_all_models()에서 자동 로드
+    3. 메인 서버가 request.modelType으로 선택
+    """
 
     def __init__(self, model_dir: Path):
         self._model_dir = model_dir
-        self._instruments: dict[int, InstrumentConfig] = {}
-        self._loaded_models: dict[int, Any] = {}
-        self._load_registry()
+        self._models: dict[str, LoadedModel] = {}  # key = model_type
+        self._default_model_type: str | None = None
+        self._registry_config: dict = {}
 
-    def _load_registry(self):
+    def _load_registry_config(self):
         registry_path = self._model_dir / "registry.json"
         if not registry_path.exists():
-            logger.warning(
-                f"registry.json not found in {self._model_dir}. Proceeding with empty registry."
-            )
+            logger.warning(f"registry.json not found in {self._model_dir}")
             return
-
         with open(registry_path) as f:
-            data = json.load(f)
-
-        for item in data.get("instruments", []):
-            config = InstrumentConfig(**item)
-            self._instruments[config.midi_program] = config
-
-        logger.info(f"레지스트리 로드 완료: {len(self._instruments)}개 악기")
+            self._registry_config = json.load(f)
 
     def load_all_models(self):
-        """앱 시작 시 모든 모델을 메모리에 로드"""
-        total = len(self._instruments)
-        loaded = 0
-        for midi_program, config in self._instruments.items():
-            model_path = self._model_dir / config.model_file
-            if model_path.exists():
-                try:
-                    self._loaded_models[midi_program] = self._load_model(
-                        model_path, config.model_type
-                    )
-                    logger.info(f"모델 로드 성공: {config.name} ({config.model_file})")
-                    loaded += 1
-                except Exception as e:
-                    logger.error(
-                        f"모델 로드 실패: {config.model_file} - Exception: {e}"
-                    )
-            else:
-                logger.warning(f"모델 파일 없음: {model_path} ({config.name})")
-        logger.info(f"전체 모델 로드 상태: {loaded}/{total}")
+        """앱 시작 시 registry.json의 모든 모델을 로드"""
+        self._load_registry_config()
 
-    def _load_model(self, path: Path, model_type: str) -> Any:
-        # Pytorch
-        if model_type == "pytorch":
+        # 기본 모델 설정: registry.json의 "default" 필드
+        self._default_model_type = self._registry_config.get("default")
+
+        models = self._registry_config.get("models", [])
+
+        for idx, model_cfg in enumerate(models):
+            model_type = model_cfg["type"]        # "qwen2.5"
+            ckpt_path  = self._model_dir / model_cfg["path"]  # "best"
+            name       = model_cfg.get("name", model_type)
+
+            try:
+                loaded = self._load_single_model(model_type, ckpt_path, name)
+                self._models[model_type] = loaded
+                logger.info(f"모델 로드 성공: {name} ({model_type})")
+            except Exception as e:
+                logger.error(f"모델 로드 실패: {name} - {e}", exc_info=True)
+
+        # default가 설정 안 됐으면 첫 번째 모델을 기본으로
+        if not self._default_model_type and self._models:
+            self._default_model_type = next(iter(self._models))
+            logger.info(f"기본 모델 자동 설정: {self._default_model_type}")
+
+        logger.info(
+            f"전체 모델 로드: {len(self._models)}개, "
+            f"기본 모델: {self._default_model_type}"
+        )
+
+    def _load_single_model(
+        self, model_type: str, ckpt_path: Path, name: str
+    ) -> LoadedModel:
+        if model_type == "qwen2.5":
+            from app.services.inference import build_v5_vocab, load_model
             import torch
 
-            # NOTE: Custom classes like GPT, ModelConfig must be available in context.
-            # Referencing 'app.core.model_cache' stub implementation.
-            from app.core.model_cache import GPT, ModelConfig
+            device = f"cuda" if torch.cuda.is_available() else "cpu"
+            vocab = build_v5_vocab()
+            vocab_r = {v: k for k, v in vocab.items()}
+            model = load_model(str(ckpt_path), len(vocab), vocab, device)
 
-            ckpt = torch.load(path, map_location="cpu")
-            c = ModelConfig()
-            if "config" in ckpt:
-                for k, v in ckpt["config"].items():
-                    if hasattr(c, k):
-                        setattr(c, k, v)
-
-            # Note: The colab had NUM_LAYERS logic here
-            model = GPT(c)
-            # if cuda is available, push it
-            if torch.cuda.is_available():
-                model = model.cuda()
-            model.load_state_dict(ckpt["model_state_dict"])
-            model.eval()
-            return model
-
-        elif model_type == "onnx":
-            import onnxruntime
-
-            return onnxruntime.InferenceSession(str(path))
+            return LoadedModel(
+                name=name,
+                model_type=model_type,
+                model=model,
+                vocab=vocab,
+                vocab_r=vocab_r,
+                device=device,
+            )
         else:
             raise ValueError(f"지원하지 않는 model_type: {model_type}")
 
-    def get_model(self, midi_program: int) -> Any:
-        if midi_program not in self._loaded_models:
+    def get_model(self, model_type: str = None) -> LoadedModel:
+        """model_type으로 모델 선택. None이면 기본 모델 반환."""
+        key = model_type or self._default_model_type
+        if key not in self._models:
             raise ValueError(
-                f"지원하지 않는 악기 혹은 모델 로드 실패: midi_program={midi_program}"
+                f"모델을 찾을 수 없음: {key}. "
+                f"사용 가능: {list(self._models.keys())}"
             )
-        return self._loaded_models[midi_program]
+        return self._models[key]
 
-    def get_config(self, midi_program: int) -> InstrumentConfig:
-        return self._instruments.get(midi_program)
-
-    def list_instruments(self) -> list[InstrumentConfig]:
-        return [
-            config
-            for midi_program, config in self._instruments.items()
-            if midi_program in self._loaded_models
-        ]
+    def list_models(self) -> list[str]:
+        """로드된 모델 타입 목록 반환"""
+        return list(self._models.keys())

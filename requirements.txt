@@ -7,4 +7,5 @@ torch>=2.3.0
 mido>=1.3.2
 pretty_midi>=0.2.10
 tqdm>=4.66.0
-git+https://github.com/jthickstun/anticipation.git
+transformers>=4.40.0
+safetensors>=0.4.0

@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "info"
     MODEL_DIR: str = "/models"
     RESULTS_DIR: str = "/tmp/results"
+    GPU_ID: int = 0                     # 사용할 GPU 번호
 
     class Config:
         env_file = ".env"
