@@ -180,6 +180,9 @@ def load_model(ckpt_path, vocab_size, vocab, device):
     model.config.use_cache = False
     model.eval()
     model.to(device)
+    if hasattr(torch, 'compile'):
+        model = torch.compile(model)
+        logger.info("⚡ torch.compile 활성화")
     return model
 
 
@@ -347,6 +350,17 @@ def generate_for_target(
     logger.info(f"[{target_name}] 총 {max_bar+1}마디 / "
                 f"윈도우 {window_bars}마디 → {total_windows}번 생성")
 
+    TIME_IDS = torch.tensor([vocab[f"TIME={i}"] for i in range(96)], device=device)
+    PITCH_IDS = torch.tensor([vocab[f"PITCH={i}"] for i in range(128)], device=device)
+    VEL_IDS = torch.tensor([vocab[f"VEL={i}"] for i in range(32)], device=device)
+    INST_TARGET_ID = vocab[f"INST={target_prog}"]
+    BAR_START_ID = vocab["BAR_START"]
+    PIECE_END_ID = vocab["PIECE_END"]
+    EOS_ID = vocab["EOS"]
+
+    pitch_mask = torch.full((len(vocab),), -1e9, device=device)
+    pitch_mask[PITCH_IDS[pitch_min: pitch_max + 1]] = 0.0
+
     for win_idx in range(total_windows):
         win_start = win_idx * window_bars
         win_end   = min(win_start + window_bars - 1, max_bar)
@@ -355,50 +369,30 @@ def generate_for_target(
 
         ctx_start = max(0, win_start - context_bars)
 
-        # 컨텍스트: 헤더 + 앞 컨텍스트 밴드 + 앞 컨텍스트 생성된 타겟 + 현재 윈도우 밴드
+        # 컨텍스트 조립 (optimized)
         context = list(header)
         for b in range(ctx_start, win_start):
-            context += bar_tokens.get(b, [])
-        for b in range(ctx_start, win_start):
-            if b in gen_bar_tokens:
-                context += gen_bar_tokens[b]
+            context += bar_tokens.get(b, []) + gen_bar_tokens.get(b, [])
         for b in range(win_start, win_end + 1):
             context += bar_tokens.get(b, [])
 
         context   = trim_context(context, header, MAX_CTX, vocab)
         input_ids = torch.tensor([context], dtype=torch.long, device=device)
-        gen_toks  = []
 
-        # KV cache로 컨텍스트 인코딩
+        # KV cache로 컨텍스트 사전 인코딩
         out = model(input_ids=input_ids, use_cache=True)
         pkv = out.past_key_values
+        gen_toks = [BAR_START_ID, INST_TARGET_ID]
 
-        # 프롬프트: BAR_START + INST=target
-        for tok in [vocab["BAR_START"], vocab[f"INST={target_prog}"]]:
+        # 프롬프트 토큰들을 하나씩 넣어 pkv 갱신 처리
+        for tok in gen_toks:
             t_in = torch.tensor([[tok]], dtype=torch.long, device=device)
             out  = model(input_ids=t_in, past_key_values=pkv, use_cache=True)
             pkv  = out.past_key_values
-            gen_toks.append(tok)
 
-        bar_count     = 1
-        # note_pos: 노트 내 현재 위치
-        #   0 = 자유 (INST= 또는 BAR_START 대기)
-        #   1 = ART 대기
-        #   2 = EXPR 대기
-        #   3 = TIME 대기
-        #   4 = PITCH 대기
-        #   5 = DUR 대기
-        #   6 = VEL 대기
-        note_pos      = 1     # 프롬프트에서 INST= 직후이므로 ART 대기
-        last_time_val = -1    # 현재 마디에서 마지막으로 사용된 TIME= 값
-
-        # 허용 토큰 집합 (사전 계산)
-        art_ids      = {vocab[a] for a in ["ART_NORMAL","ART_LEGATO","ART_VIBRATO","ART_STACCATO"]}
-        expr_ids     = {vocab[f"EXPR_{i}"] for i in range(32)}
-        dur_ids      = {vocab[f"DUR={i}"] for i in range(1, 193)}
-        vel_ids      = {vocab[f"VEL={i}"] for i in range(32)}
-        inst_id      = vocab[f"INST={target_prog}"]
-        bar_start_id = vocab["BAR_START"]
+        bar_count = 1
+        target_playing = True
+        last_time_val = -1
 
         cur_in = torch.tensor([[gen_toks[-1]]], dtype=torch.long, device=device)
 
@@ -407,37 +401,9 @@ def generate_for_target(
             pkv    = out.past_key_values
             logits = out.logits[0, -1, :].float()
 
-            # ── note_pos별 허용 토큰 외 전부 차단 ──
-            mask = torch.full_like(logits, -1e9)
-
-            if note_pos == 1:       # ART만
-                for i in art_ids: mask[i] = 0.0
-
-            elif note_pos == 2:     # EXPR만
-                for i in expr_ids: mask[i] = 0.0
-
-            elif note_pos == 3:     # TIME만 (last_time_val 초과만 허용 → 같은 박자 중복 차단)
-                for t in range(96):
-                    if t > last_time_val:
-                        mask[vocab[f"TIME={t}"]] = 0.0
-
-            elif note_pos == 4:     # PITCH만 (음역대 제한 포함)
-                for p in range(pitch_min, pitch_max + 1):
-                    mask[vocab[f"PITCH={p}"]] = 0.0
-
-            elif note_pos == 5:     # DUR만
-                for i in dur_ids: mask[i] = 0.0
-
-            elif note_pos == 6:     # VEL만
-                for i in vel_ids: mask[i] = 0.0
-
-            else:                   # note_pos == 0: INST=target 또는 BAR_START 대기
-                mask[inst_id]            = 0.0
-                mask[bar_start_id]       = 0.0
-                mask[vocab["PIECE_END"]] = 0.0
-                mask[vocab["EOS"]]       = 0.0
-
-            logits = logits + mask
+            logits[PITCH_IDS] += pitch_mask[PITCH_IDS]
+            if last_time_val >= 0: logits[TIME_IDS[:last_time_val + 1]] = -1e9
+            if target_playing: logits[INST_TARGET_ID] = -1e9
 
             # nucleus sampling
             logits  = logits / max(temperature, 1e-8)
@@ -451,30 +417,23 @@ def generate_for_target(
             next_tok = s_idx[torch.multinomial(s_probs, 1)].item()
             gen_toks.append(next_tok)
 
-            name = vocab_r.get(next_tok, "?")
-
-            # ── 상태 전이 ──
-            if note_pos == 0:
-                if next_tok == inst_id:
-                    note_pos = 1                    # INST → ART 대기
-                elif name == "BAR_START":
-                    bar_count    += 1
-                    last_time_val = -1              # 마디 바뀌면 TIME 리셋
-                    if bar_count > window_bars:
-                        break
-                elif next_tok in (vocab["PIECE_END"], vocab["EOS"]):
-                    break
-            elif note_pos == 1: note_pos = 2        # ART  → EXPR
-            elif note_pos == 2: note_pos = 3        # EXPR → TIME
-            elif note_pos == 3:                     # TIME → PITCH, TIME 값 기록
-                last_time_val = int(name.split("=")[1]) if name.startswith("TIME=") else last_time_val
-                note_pos = 4
-            elif note_pos == 4: note_pos = 5        # PITCH → DUR
-            elif note_pos == 5: note_pos = 6        # DUR   → VEL
-            elif note_pos == 6: note_pos = 0        # VEL   → 다음 노트/BAR 대기
+            if next_tok == INST_TARGET_ID:
+                target_playing = True
+                last_time_val = -1
+            elif target_playing and (next_tok in VEL_IDS):
+                target_playing = False
+            elif next_tok == BAR_START_ID:
+                bar_count += 1
+                last_time_val = -1
+                target_playing = False
+                if bar_count > window_bars: break
+            elif next_tok in [PIECE_END_ID, EOS_ID]:
+                break
+            
+            if (next_tok >= TIME_IDS[0]) and (next_tok <= TIME_IDS[-1]):
+                last_time_val = (next_tok - TIME_IDS[0]).item()
 
             cur_in = torch.tensor([[next_tok]], dtype=torch.long, device=device)
-
 
         # 생성 토큰 → 마디별 분리 (다음 윈도우 히스토리)
         cur_bar_toks = []
