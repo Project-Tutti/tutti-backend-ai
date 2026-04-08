@@ -3,6 +3,9 @@
 # ═══════════════════════════════════════════════════════════
 FROM nvidia/cuda:12.1.0-devel-ubuntu22.04 AS builder
 
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Seoul
+
 WORKDIR /build
 
 # Python 3.11 + 빌드 도구 설치
@@ -28,7 +31,10 @@ RUN python3.11 -m pip install --no-cache-dir -r requirements.txt
 # ═══════════════════════════════════════════════════════════
 # Stage 2: Runtime — 최소 CUDA 런타임 이미지
 # ═══════════════════════════════════════════════════════════
-FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
+FROM nvidia/cuda:12.1.0-base-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Seoul
 
 WORKDIR /app
 
