@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Request
-from app.schemas.response import HealthResponse, LoadedInstrument
+from fastapi.responses import JSONResponse
+from app.schemas.response import HealthResponse
 
 router = APIRouter()
 
@@ -7,10 +8,13 @@ router = APIRouter()
 @router.get("/health", response_model=HealthResponse)
 async def health(request: Request):
     registry = request.app.state.registry
-    instruments = [
-        LoadedInstrument(
-            midi_program=inst.midi_program, name=inst.name, category=inst.category
+    models = registry.list_models()
+    if not models:
+        return JSONResponse(
+            {"status": "unhealthy", "loaded_models": []},
+            status_code=503,
         )
-        for inst in registry.list_instruments()
-    ]
-    return HealthResponse(status="ok", loaded_instruments=instruments)
+    return HealthResponse(
+        status="ok",
+        loaded_models=models,
+    )

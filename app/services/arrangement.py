@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 async def process_arrangement(request: ArrangeRequest, registry):
     """편곡 전체 라이프사이클 — 진행률을 콜백으로 main-server에 전송"""
     job_id = str(uuid.uuid4())
+    midi_path = None
     cb = str(request.callbackUrl)
     secret = request.callbackSecret
     project_id = request.projectId

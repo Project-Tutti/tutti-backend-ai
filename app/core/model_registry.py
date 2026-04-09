@@ -107,13 +107,20 @@ class ModelRegistry:
             raise ValueError(f"지원하지 않는 model_type: {model_type}")
 
     def get_model(self, model_type: str = None) -> LoadedModel:
-        """model_type으로 모델 선택. None이면 기본 모델 반환."""
+        """model_type으로 모델 선택. None이면 기본 모델 반환.
+        등록되지 않은 model_type이면 기본 모델로 폴백."""
         key = model_type or self._default_model_type
         if key not in self._models:
-            raise ValueError(
-                f"모델을 찾을 수 없음: {key}. "
-                f"사용 가능: {list(self._models.keys())}"
-            )
+            if self._default_model_type and self._default_model_type in self._models:
+                logger.warning(
+                    f"모델 '{key}' 없음, 기본 모델 '{self._default_model_type}'로 폴백"
+                )
+                key = self._default_model_type
+            else:
+                raise ValueError(
+                    f"모델을 찾을 수 없음: {key}. "
+                    f"사용 가능: {list(self._models.keys())}"
+                )
         return self._models[key]
 
     def list_models(self) -> list[str]:
