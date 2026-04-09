@@ -83,7 +83,7 @@ jobs:
     steps:
       - name: Execute local deployment script
         env:
-          TUNNEL_TOKEN: ${{ secrets.TUNNEL_TOKEN }}
+          TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           AI_SERVER_API_KEY: ${{ secrets.AI_SERVER_API_KEY }}
           LOG_LEVEL: ${{ secrets.LOG_LEVEL }}
