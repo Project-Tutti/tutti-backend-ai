@@ -106,10 +106,10 @@ jobs:
           cp -f registry.json models/registry.json
 
           echo "🔐 2. Updating .env from GitHub Secrets..."
-          echo "TUNNEL_TOKEN=\"${TUNNEL_TOKEN}\"" > .env
-          echo "GCP_PROJECT_ID=\"${GCP_PROJECT_ID}\"" >> .env
-          echo "AI_SERVER_API_KEY=\"${AI_SERVER_API_KEY}\"" >> .env
-          echo "LOG_LEVEL=\"${LOG_LEVEL:-info}\"" >> .env
+          echo "TUNNEL_TOKEN=${TUNNEL_TOKEN}" > .env
+          echo "GCP_PROJECT_ID=${GCP_PROJECT_ID}" >> .env
+          echo "AI_SERVER_API_KEY=${AI_SERVER_API_KEY}" >> .env
+          echo "LOG_LEVEL=${LOG_LEVEL:-info}" >> .env
 
           echo "📦 3. Pulling latest artifacts..."
           docker compose pull ai-server
