@@ -78,64 +78,54 @@ jobs:
     needs: build-and-push
     # 빌드가 성공적이거나 skip되었을 때 항상 배포 진행 (registry.json 등 Docker 이미지가 필요없는 변경사항도 적용하기 위함)
     if: always() && (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     environment: production
     steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.ONPREM_HOST }}
-          username: ${{ secrets.ONPREM_USER }}
-          password: ${{ secrets.ONPREM_PASSWORD }}
-          envs: TUNNEL_TOKEN,GCP_PROJECT_ID,AI_SERVER_API_KEY,LOG_LEVEL
-          # 1. 깃허브 최신 코드 (registry.json, docker-compose.yml 등) 강제 동기화 보장 (충돌 방지)
-          # 2. 깃허브 시크릿을 기반으로 최신 .env 파일 덮어쓰기 (환경변수 업데이트)
-          # 3. 새로운 도커 이미지(최신버전) 다운로드
-          # 4. 무중단 롤링 업데이트 (update_config 적용) 및 찌꺼기 이미지 청소
-          script: |
-            cd ~/tutti-backend-ai
-
-            # 💡 [참고] 온프레미스 서버 디렉토리 최적화 (Sparse-Checkout) 가이드
-            # 서버에 모든 소스코드가 안 보이고 특정 폴더들만 남겨져 있다면 sparse-checkout 적용 상태입니다.
-            # 1) 만약 배포 시 필요한 폴더가 추가된다면 서버 터미널에서 다음 1회 실행:
-            #    $ git sparse-checkout add 추가할폴더명
-            # 2) 숨김 처리를 해제하고 전체 소스코드를 복구하고 싶다면:
-            #    $ git sparse-checkout disable
-
-            echo "📥 1. Syncing latest code (Force clean)..."
-            git fetch origin main
-            git reset --hard origin/main
-
-            echo "📂 1.5. Syncing registry.json to models/ directory..."
-            # docker-compose가 /models로 마운트하므로 루트의 registry.json을 models/ 안으로 복사
-            cp -f registry.json models/registry.json
-
-            echo "🔐 2. Updating .env from GitHub Secrets..."
-            echo "TUNNEL_TOKEN=\"${TUNNEL_TOKEN}\"" > .env
-            echo "GCP_PROJECT_ID=\"${GCP_PROJECT_ID}\"" >> .env
-            echo "AI_SERVER_API_KEY=\"${AI_SERVER_API_KEY}\"" >> .env
-            echo "LOG_LEVEL=\"${LOG_LEVEL:-info}\"" >> .env
-
-            echo "📦 3. Pulling latest artifacts..."
-            docker compose pull ai-server
-
-            echo "🔄 4. Rolling update with Zero-Downtime config..."
-            docker compose up -d --remove-orphans
-            
-            echo "🧹 5. Cleaning up old unused Docker images..."
-            docker image prune -f
-
-            echo "⏳ Waiting for initial rollout synchronization..."
-            sleep 15
-
-            echo "📋 Service status:"
-            docker compose ps
-
-            echo ""
-            echo "🏥 Health check:"
-            curl -sf http://localhost:8080/health && echo " ✅ Nginx API Ready" || echo " ❌ Check Wait State"
+      - name: Execute local deployment script
         env:
           TUNNEL_TOKEN: ${{ secrets.TUNNEL_TOKEN }}
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           AI_SERVER_API_KEY: ${{ secrets.AI_SERVER_API_KEY }}
           LOG_LEVEL: ${{ secrets.LOG_LEVEL }}
+        run: |
+          cd ~/tutti-backend-ai
+
+          # 💡 [참고] 온프레미스 서버 디렉토리 최적화 (Sparse-Checkout) 가이드
+          # 서버에 모든 소스코드가 안 보이고 특정 폴더들만 남겨져 있다면 sparse-checkout 적용 상태입니다.
+          # 1) 만약 배포 시 필요한 폴더가 추가된다면 서버 터미널에서 다음 1회 실행:
+          #    $ git sparse-checkout add 추가할폴더명
+          # 2) 숨김 처리를 해제하고 전체 소스코드를 복구하고 싶다면:
+          #    $ git sparse-checkout disable
+
+          echo "📥 1. Syncing latest code (Force clean)..."
+          git fetch origin main
+          git reset --hard origin/main
+
+          echo "📂 1.5. Syncing registry.json to models/ directory..."
+          # docker-compose가 /models로 마운트하므로 루트의 registry.json을 models/ 안으로 복사
+          cp -f registry.json models/registry.json
+
+          echo "🔐 2. Updating .env from GitHub Secrets..."
+          echo "TUNNEL_TOKEN=\"${TUNNEL_TOKEN}\"" > .env
+          echo "GCP_PROJECT_ID=\"${GCP_PROJECT_ID}\"" >> .env
+          echo "AI_SERVER_API_KEY=\"${AI_SERVER_API_KEY}\"" >> .env
+          echo "LOG_LEVEL=\"${LOG_LEVEL:-info}\"" >> .env
+
+          echo "📦 3. Pulling latest artifacts..."
+          docker compose pull ai-server
+
+          echo "🔄 4. Rolling update with Zero-Downtime config..."
+          docker compose up -d --remove-orphans
+          
+          echo "🧹 5. Cleaning up old unused Docker images..."
+          docker image prune -f
+
+          echo "⏳ Waiting for initial rollout synchronization..."
+          sleep 15
+
+          echo "📋 Service status:"
+          docker compose ps
+
+          echo ""
+          echo "🏥 Health check:"
+          curl -sf http://localhost:8080/health && echo " ✅ Nginx API Ready" || echo " ❌ Check Wait State"

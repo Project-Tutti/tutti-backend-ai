@@ -15,8 +15,9 @@
 6. [모델 파일 배치](#6-모델-파일-배치)
 7. [서비스 실행](#7-서비스-실행)
 8. [서비스 관리 명령어](#8-서비스-관리-명령어)
-9. [트러블슈팅](#9-트러블슈팅)
-10. [GPU 시분할 및 MPS 설정 (선택)](#10-gpu-시분할-및-mps-설정-선택)
+9. [GitHub Actions Self-Hosted Runner 셋업 (권장)](#9-github-actions-self-hosted-runner-셋업-필수-권장)
+10. [트러블슈팅](#10-트러블슈팅)
+11. [GPU 시분할 및 MPS 설정 (선택)](#11-gpu-시분할-및-mps-설정-선택)
 
 ---
 
@@ -360,7 +361,51 @@ docker compose up -d --scale ai-server=1
 
 ---
 
-## 9. 트러블슈팅
+## 9. GitHub Actions Self-Hosted Runner 셋업 (필수 권장)
+
+보안과 배포 안정성을 위해 SSH 개방 대신 데몬 방식의 Runner 운영을 권장합니다.
+포트포워딩 없이도 GitHub 클라우드와 터널링되어 안전하게 무중단 배포를 실행할 수 있습니다.
+
+### 9.1 GitHub에서 설치 토큰(Token) 발급받기
+1. 해당 리포지토리의 **Settings** -> 좌측 메뉴 보안/자동화의 **Actions** -> **Runners** 클릭
+2. 우측 상단의 **[New self-hosted runner]** 버튼 클릭
+3. Runner image로 **Linux**, Architecture는 **x64** 선택
+
+### 9.2 온프레미스 서버에 Runner 설치 (터미널)
+GitHub 화면에 뜨는 'Download' 및 'Configure' 명령어를 복사하여 붙여넣습니다. (아래는 예시입니다)
+
+```bash
+# 폴더 생성 및 이동
+mkdir actions-runner && cd actions-runner
+
+# 최신 릴리즈 다운로드 및 압축 해제 (버전은 GitHub 안내 화면 참조)
+curl -o actions-runner-linux-x64-2.x.x.tar.gz -L https://github.com/actions/runner/releases/download/v2.x.x/actions-runner-linux-x64-2.x.x.tar.gz
+tar xzf ./actions-runner-linux-x64-2.x.x.tar.gz
+
+# 설정 진행 (기본값 엔터, GitHub 화면의 명령어 그대로 복사)
+./config.sh --url https://github.com/Project-Tutti/tutti-backend-ai --token <YOUR_TOKEN>
+```
+
+### 9.3 백그라운드 서비스(Daemon)로 등록
+재부팅되어도 자동으로 Runner가 실행되도록 시스템 데몬으로 등록해야 합니다.
+
+```bash
+# 서비스 인스톨 (sudo 권한 필요)
+sudo ./svc.sh install
+
+# 서비스 시작
+sudo ./svc.sh start
+
+# 서비스 상태 확인
+sudo ./svc.sh status
+```
+
+> [!TIP]
+> 이제 GitHub 저장소의 `Settings` -> `Actions` -> `Runners` 메뉴에 들어가면 **Idle (녹색 불)** 상태로 서버가 대기 중인 것을 확인할 수 있습니다. 이제부터 코드가 푸시되면 외부 간섭 없이 알아서 온프렘 서버에서 `docker compose up -d` 롤아웃이 실행됩니다.
+
+---
+
+## 10. 트러블슈팅
 
 ### GPU가 컨테이너에서 인식되지 않는 경우
 
@@ -415,7 +460,7 @@ docker compose up -d --scale ai-server=1
 
 ---
 
-## 10. GPU 시분할 및 MPS 설정 (선택)
+## 11. GPU 시분할 및 MPS 설정 (선택)
 
 ### 기본 동작: 시분할 (Time-Slicing)
 
