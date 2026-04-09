@@ -36,6 +36,7 @@ services:
       - RESULTS_DIR=/tmp/results
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - GPU_ID=0
+      - AI_SERVER_API_KEY=${AI_SERVER_API_KEY}
     volumes:
       - ./models:/models:ro
       - ai-results:/tmp/results
