@@ -68,6 +68,19 @@ async def process_arrangement(request: ArrangeRequest, registry):
         output_path = Path(settings.RESULTS_DIR) / f"{job_id}.mid"
 
         loop = asyncio.get_running_loop()
+        
+        def inference_progress_hook(pct: int):
+            # 동기 스레드인 run_arrangement 내부에서 호출되어 비동기 콜백 전송
+            asyncio.run_coroutine_threadsafe(
+                send_callback(cb, secret, {
+                    "projectId": project_id,
+                    "versionId": version_id,
+                    "status": "processing",
+                    "progress": pct,
+                }),
+                loop
+            )
+
         result_path = await loop.run_in_executor(
             None,
             run_arrangement,
@@ -82,6 +95,7 @@ async def process_arrangement(request: ArrangeRequest, registry):
             loaded.vocab,           # vocab
             loaded.vocab_r,         # vocab_r
             loaded.device,          # device
+            inference_progress_hook # progress_hook
         )
 
         await send_callback(cb, secret, {

@@ -339,7 +339,8 @@ def generate_for_target(
     target_name, pitch_min, pitch_max,
     window_bars, context_bars,
     temperature, top_p, max_new_tokens,
-    vocab, vocab_r, source_pm, device
+    vocab, vocab_r, source_pm, device,
+    progress_hook=None
 ):
     cfg         = INSTRUMENT_GROUPS[target_name]
     target_prog = cfg["representative"]
@@ -365,6 +366,11 @@ def generate_for_target(
     pitch_mask[PITCH_IDS[pitch_min: pitch_max + 1]] = 0.0
 
     for win_idx in range(total_windows):
+        if progress_hook is not None:
+            # 윈도우 진행률에 따라 20% ~ 80% 사이로 세밀하게 매핑
+            pct = int(20 + (win_idx / total_windows) * 60)
+            progress_hook(pct)
+
         win_start = win_idx * window_bars
         win_end   = min(win_start + window_bars - 1, max_bar)
         if win_start > max_bar:
@@ -597,6 +603,7 @@ def run_arrangement(
     vocab: dict = None,
     vocab_r: dict = None,
     device: str = "cuda",
+    progress_hook = None,
 ) -> str:
     """편곡 추론 실행, 결과 MIDI 경로 반환.
 
@@ -612,6 +619,7 @@ def run_arrangement(
         vocab: 보캡 딕셔너리
         vocab_r: 역방향 보캡 (id → token name)
         device: 디바이스 ("cuda" or "cpu")
+        progress_hook: 진행률(콜백) 업데이트 함수
 
     Returns:
         결과 MIDI 파일 경로
@@ -646,7 +654,7 @@ def run_arrangement(
         target, pitch_min, pitch_max,
         window_bars, context_bars,
         temperature, top_p, max_new_tokens,
-        vocab, vocab_r, source_pm, device)
+        vocab, vocab_r, source_pm, device, progress_hook)
 
     logger.info(f"디코딩 노트: {len(all_notes)}")
     all_notes = postprocess(all_notes, pitch_min, pitch_max)
