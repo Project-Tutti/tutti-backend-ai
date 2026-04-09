@@ -180,9 +180,12 @@ def load_model(ckpt_path, vocab_size, vocab, device):
     model.config.use_cache = False
     model.eval()
     model.to(device)
-    if hasattr(torch, 'compile'):
-        model = torch.compile(model)
-        logger.info("⚡ torch.compile 활성화")
+    
+    # RTX 4090 하드웨어 가속(TF32) 활성화
+    # (transformers Dynamo 충돌 이슈로 인해 torch.compile 대신 네이티브 TF32 사용)
+    torch.set_float32_matmul_precision('high')
+    logger.info("⚡ TF32 하드웨어 코어 가속 활성화 (torch.compile 비활성화)")
+    
     return model
 
 
