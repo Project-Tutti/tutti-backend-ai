@@ -160,7 +160,7 @@ cloudflared --version
 
 ```bash
 cloudflared tunnel login
-# → 브라우저가 열립니다. tutti.asia 도메인이 등록된 Cloudflare 계정으로 로그인
+# → 브라우저가 열립니다. 도메인이 등록된 Cloudflare 계정으로 로그인
 ```
 
 ### 4.3 터널 생성
@@ -174,8 +174,8 @@ cloudflared tunnel create tutti-ai
 ### 4.4 DNS 레코드 연결
 
 ```bash
-cloudflared tunnel route dns tutti-ai ai.tutti.asia
-# → ai.tutti.asia CNAME 레코드가 자동 생성됩니다.
+cloudflared tunnel route dns tutti-ai <AI_SERVER_HOST>
+# → <AI_SERVER_HOST> CNAME 레코드가 자동 생성됩니다.
 ```
 
 ### 4.5 터널 토큰 발급 (Docker Compose용)
@@ -189,8 +189,8 @@ Cloudflare Dashboard에서 터널 토큰을 발급받습니다:
 
 > [!IMPORTANT]
 > 터널 설정 시 **Public Hostname**을 추가해야 합니다:
-> - **Subdomain**: `ai`
-> - **Domain**: `tutti.asia`
+> - **Subdomain**: `<서브도메인>`
+> - **Domain**: `<도메인>`
 > - **Service**: `http://nginx:80`
 
 ---
@@ -294,7 +294,7 @@ docker compose ps
 curl http://localhost:8080/health
 
 # 외부에서 확인 (다른 컴퓨터에서)
-curl https://ai.tutti.asia/health
+curl https://<AI_SERVER_HOST>/health
 ```
 
 ---
@@ -446,7 +446,7 @@ echo quit | nvidia-cuda-mps-control
     │
     │  HTTPS
     ▼
-Cloudflare Edge (ai.tutti.asia)
+Cloudflare Edge (<AI_SERVER_HOST>)
     │
     │  Cloudflare Tunnel (암호화)
     ▼

@@ -5,7 +5,7 @@
 # ═══════════════════════════════════════════════════════════
 
 services:
-  # ── Cloudflare Tunnel: 외부 접근 (ai.tutti.asia → nginx) ──
+  # ── Cloudflare Tunnel: 외부 접근 (AI_SERVER_HOST → nginx) ──
   cloudflared:
     image: cloudflare/cloudflared:latest
     command: tunnel run
