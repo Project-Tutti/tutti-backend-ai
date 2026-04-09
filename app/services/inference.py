@@ -743,7 +743,7 @@ def run_arrangement(
     if not all_notes:
         raise RuntimeError(
             f"생성 노트 없음 — temperature를 높이거나 입력 MIDI를 확인하세요. "
-            f"(target={tgarget}, genre={genre})"
+            f"(target={target}, genre={genre})"
         )
 
     save_midi(all_notes, source_pm, output_path, target_prog, target)
