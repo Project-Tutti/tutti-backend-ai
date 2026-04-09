@@ -12,11 +12,13 @@ async def verify_api_key(
 ) -> str:
     """
     X-API-Key 헤더를 검증합니다.
-    AI_SERVER_API_KEY 환경변수가 비어있으면 인증을 건너뜁니다 (로컬 개발용).
     """
     if not _EXPECTED_KEY:
-        # 환경변수 미설정 시 인증 스킵 (로컬 개발)
-        return "dev"
+        # 서버 환경변수 자체가 누락된 치명적 에러 상황
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Server configuration error: AI_SERVER_API_KEY is missing.",
+        )
 
     if not api_key or api_key != _EXPECTED_KEY:
         raise HTTPException(

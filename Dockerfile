@@ -44,8 +44,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && add-apt-repository ppa:deadsnakes/ppa \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
+    build-essential \
     python3.11 \
     python3.11-venv \
+    python3.11-dev \
     curl \
     libsndfile1 \
     fluid-soundfont-gm \

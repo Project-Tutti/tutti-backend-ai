@@ -262,6 +262,14 @@ git clone https://github.com/Project-Tutti/tutti-backend-ai.git
 cd tutti-backend-ai
 ```
 
+> **[권장] Git Sparse-Checkout 설정 (서버 디렉토리 최적화)**
+> 온프레미스 서버는 도커를 통해 실행되므로 앱 소스코드가 파일 시스템에 남아있을 필요가 없습니다. 다음 명령어를 실행하면 서버 구동에 필요한 핵심 설정 파일(`docker-compose.yml`, `nginx`, `models` 등)만 로컬에 남기고 나머지 폴더를 자동으로 정리해줍니다. (추후 `git pull` 동작 시 충돌도 방지됩니다)
+>
+> ```bash
+> git sparse-checkout init --cone
+> git sparse-checkout set docker-compose.yml nginx models
+> ```
+
 ### 7.2 환경 변수 설정
 
 ```bash

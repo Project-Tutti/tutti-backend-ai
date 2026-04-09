@@ -1,81 +1,89 @@
-# Tutti AI 모델 등록 및 업로드 가이드
+# Tutti AI 모델 반영 및 레지스트리(registry.json) 관리 가이드 (On-Premise)
 
-이 문서는 GCS 버킷에 AI 모델을 업로드하고, AI 서버가 이를 인식할 수 있도록 `registry.json`을 작성하는 방법을 설명합니다.
+이 문서는 온프레미스 서버(물리 서버) 환경에서 새로운 AI 모델 가중치(Weight) 파일을 서버에 넣고, 이를 서버가 인식하도록 `registry.json`을 수정하여 자동 배포하는 방법을 설명합니다.
 
-## 1. 모델 파일 준비 및 이름 규칙
+---
 
-AI 서버는 PyTorch 모델(`.pt` 또는 `.pth`)을 사용합니다. 모델 파일의 이름은 **직관적이고 영어 소문자 및 언더스코어(`_`)** 로 작성하는 것을 권장합니다.
-특정 악기나 버전을 명시하면 관리가 편해집니다.
+## 1. 개요: 2-Track 배포 방식
 
-- **권장 이름 규칙**: `[악기명]_[버전].pt`
-- **예시**:
-  - `piano_v1.pt`
-  - `violin_v2.pt`
-  - `acoustic_guitar_v1.pt`
+온프레미스 아키텍처에서는 용량이 큰 모델 파일과 가벼운 설정 파일의 배포 방식이 분리되어 있습니다.
 
-## 2. registry.json 작성 방법
+| 항목 | 설명 | 배포 방법 |
+| --- | --- | --- |
+| **모델 가중치 (Weight)** | 수 기가바이트의 실제 모델 파일 (`.safetensors`, `.bin`, `.pt`) | 온프레미스 서버에 **직접 복사 (USB, SCP 등)** |
+| **registry.json** | 어떤 폴더의 어떤 모델을 쓸지 정의하는 설정 파일 | GitHub에 커밋 후 **Push (CI/CD 자동 반영)** |
 
-`registry.json`은 AI 서버가 켜질 때 어떤 모델 파일을 불러와서 어떤 MIDI Program ID(악기 번호)와 매핑할지 알려주는 "명세서"입니다.
+---
 
-### 파일 구조 (예시)
+## 2. 1단계: 모델 파일 서버에 직접 넣기
 
-```json
-{
-  "version": "v1",
-  "instruments": [
-    {
-      "midi_program": 0,
-      "name": "Acoustic Grand Piano",
-      "category": "Piano",
-      "model_file": "piano_v1.pt",
-      "model_type": "pytorch"
-    },
-    {
-      "midi_program": 40,
-      "name": "Violin",
-      "category": "Strings",
-      "model_file": "violin_v2.pt",
-      "model_type": "pytorch"
-    }
-  ]
-}
+모델의 크기가 매우 크므로 GitHub을 통하지 않고 서버에 직접 넣습니다.
+
+1. 새로운 모델이 포함된 폴더(예: `new_best_model/`)를 준비합니다.
+2. 온프레미스 서버의 `~/tutti-backend-ai/models/` 경로 안으로 해당 폴더를 복사합니다.
+
+**서버 접속 후 파일 복사 예시:**
+```bash
+# SCP 등을 통해 로컬에서 서버로 전송
+scp -r ./new_best_model globaltutti@<온프레미스_IP>:~/tutti-backend-ai/models/
 ```
 
-### 필수 필드 설명
-
-`instruments` 배열 안의 각 객체는 하나의 악기 모델을 정의합니다.
-
-- `midi_program` (정수): **가장 중요한 필드입니다**. MIDI 표준 악기 번호 (0~127)를 지정합니다. 사용자가 프론트엔드에서 이 악기를 선택하면, 서버는 이 ID와 일치하는 모델을 찾습니다. (예: 피아노는 `0`, 어쿠스틱 기타는 `25`, 바이올린은 `40` 등)
-- `name` (문자열): 악기의 이름입니다. 사람이 읽기 위한 목적입니다.
-- `category` (문자열): 악기가 속한 분류입니다. (예: `Piano`, `Strings`, `Brass` 등)
-- `model_file` (문자열): 해당 악기를 연주(추론)할 실제 모델 파일의 **정확한 파일명**입니다. `.pt`까지 모두 적어야 합니다.
-- `model_type` (문자열): 항상 `"pytorch"` 로 설정합니다.
-
-## 3. GCS에 업로드 방법
-
-모델 파일들과 `registry.json` 파일이 준비되었다면, Google Cloud Storage(GCS) 버킷의 `v1/` 경로에 업로드해야 합니다.
-
-### 설정 전제 조건
-
-- 앞서 `setup_gcs.sh`를 통해 `tutti-ai-models` 버킷이 생성되어 있어야 합니다.
-- 아래 명령어들은 모델 파일들이 있는 로컬 디렉토리에서 실행합니다.
-
-### 터미널 명령어
-
-**1) 파일 업로드하기**
-
-```bash
-# 레지스트리 설정 파일 업로드
-gsutil cp registry.json gs://tutti-ai-models/v1/registry.json
-
-# 모델 1번 (피아노) 업로드
-gsutil cp piano_v1.pt gs://tutti-ai-models/v1/piano_v1.pt
-
-# 모델 2번 (바이올린) 업로드
-gsutil cp violin_v2.pt gs://tutti-ai-models/v1/violin_v2.pt
+**최종 디렉토리 구조 예시:**
+```text
+~/tutti-backend-ai/models/
+├── best/               # (기존에 쓰던 모델)
+├── new_best_model/     # (새롭게 추가한 무거운 모델 폴더)
+└── registry.json       # (Git 자동 동기화됨. 직접 건드리지 마세요!)
 ```
 
 ---
 
-> 💡 **참고 (Init Container)**
-> 파드가 다시 시작될 때마다, `deployment.yaml`에 정의된 `Init Container`가 작동하여 위 GCS 버킷(`gs://tutti-ai-models/v1/*`)에 있는 모든 파일을 컨테이너 내부의 `/models/` 디렉토리로 다운로드합니다. 이 과정이 무사히 끝나야 FastAPI 메인 서버가 `registry.json`을 읽고 모델을 메모리에 로드합니다.
+## 3. 2단계: registry.json 수정 및 배포 (GitHub)
+
+실제 모델 파일이 서버에 들어갔다면, 이제 서버가 새 모델을 로드하도록 설정 파일을 수정해야 합니다. 
+이 작업은 **작업용 로컬 PC에서 깃허브 프로젝트를 열고 진행**합니다.
+
+### 3.1. 루트에 있는 `registry.json` 수정
+에디터를 열어 프로젝트 최상위 루트에 있는 `registry.json`을 수정합니다.
+
+```json
+{
+  "version": "v2",
+  "default": "qwen2.5",
+  "models": [
+    {
+      "type": "qwen2.5",
+      "name": "Tutti Unified v2 (신규 버전)",
+      "path": "new_best_model", 
+      "description": "새롭게 학습된 대규모 모델 적용"
+    }
+  ]
+}
+```
+- `path`: 1단계에서 서버에 복사해 둔 폴더명(예: `new_best_model`)을 적습니다.
+
+### 3.2. GitHub 커밋 및 푸시 (자동 배포)
+파일 저장이 끝났다면, Git에 커밋하고 `main` 브랜치에 Push합니다.
+
+```bash
+git add registry.json
+git commit -m "feat: 모델 버전을 new_best_model로 교체"
+git push origin main
+```
+
+---
+
+## 4. CI/CD 자동화 메커니즘 🤖 (FAQ)
+
+**Q. `registry.json` 파일 하나만 수정해서 푸시해도 알아서 전체가 배포되나요?**
+네, 완벽하게 통째로 돌아갑니다! 
+`main` 브랜치에 푸시가 발생하면 GitHub Actions(`ci-ai.yml`)가 즉시 실행되어 다음 과정을 자동으로 수행합니다.
+
+1. **GitHub Action 시작**: `registry.json` 변경 사항 감지
+2. **Docker Build/Push 생략**: 앱 소스는 바뀌지 않았으므로 엄청나게 빠른 속도로 캐시를 통과합니다.
+3. **온프레미스 서버 원격 접속**: 
+   - 서버 내부에서 자동으로 `git pull`을 실행하여 최신 `registry.json`을 받아옵니다.
+   - 받아온 최신 `.json` 파일을 컨테이너가 볼 수 있는 `models/` 내부로 즉시 강제 덮어쓰기(`cp -f`) 합니다.
+   - AI 서버 컨테이너들을 **순환 재시작(Rolling Update 느낌의 재시작)** 시켜 새로운 모델을 즉시 메모리에 로드하게 만듭니다.
+
+모든 과정이 끝나면 몇 초 후 외부에서 API를 찔러봤을 때 곧바로 새로운 버전에 등록된 텍스트와 모델 아키텍처로 응답하게 됩니다!
