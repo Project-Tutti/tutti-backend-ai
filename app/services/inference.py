@@ -107,7 +107,7 @@ def resolve_target(instrument_id: int) -> str:
 
 
 # ──────────────────────────────────────────────
-# 3. Vocabulary  (679 토큰 — TARGET_ 없음)
+# 3. Vocabulary  (682 토큰)
 # ──────────────────────────────────────────────
 def build_v5_vocab():
     vocab = {}
@@ -122,6 +122,8 @@ def build_v5_vocab():
     for r in roots:
         for m in [":maj",":min"]: vocab[f"KEY_{r}{m}"] = len(vocab)
     vocab["KEY_NONE"] = len(vocab)
+    # TARGET_ 토큰 3종 — 기존 체크포인트(vocab_size=682)와 정합성 유지를 위해 반드시 유지
+    for p in [40, 68, 73]: vocab[f"TARGET_{p}"] = len(vocab)
     for m in ["4:4","3:4","2:4","6:8","12:8","OTHER"]:
         vocab[f"METER_{m}"] = len(vocab)
     add("DENSITY_", range(1,6))
@@ -341,9 +343,13 @@ def trim_context(context, header, vocab, max_tokens=1748):
 # ──────────────────────────────────────────────
 # 7. 시작 무음 구간 감지
 # ──────────────────────────────────────────────
+
+# 빈 마디 토큰 수: BAR_START + key_tok + meter_tok + DENSITY_1 + BAR_END = 5
+EMPTY_BAR_TOKEN_COUNT = 5
+
 def _get_first_note_bar(bar_tokens):
     for bar_idx in sorted(bar_tokens.keys()):
-        if len(bar_tokens[bar_idx]) > 5:
+        if len(bar_tokens[bar_idx]) > EMPTY_BAR_TOKEN_COUNT:
             return bar_idx
     return 0
 
@@ -384,6 +390,8 @@ def generate_for_target(
     BAR_START_ID   = vocab["BAR_START"]
     PIECE_END_ID   = vocab["PIECE_END"]
     EOS_ID         = vocab["EOS"]
+    # CR-06: TIME 토큰 단조증가 강제를 위한 ID 배열
+    TIME_IDS       = [vocab[f"TIME={i}"] for i in range(96)]
 
     # pitch 마스크: 루프 밖에서 한 번만 계산
     p0         = vocab["PITCH=0"]
@@ -436,6 +444,7 @@ def generate_for_target(
 
         bar_count      = 1
         target_playing = True
+        last_time_val  = -1   # CR-06: 마디 내 마지막 TIME 토큰 값 추적
         cur_in = torch.tensor([[gen_toks[-1]]], dtype=torch.long, device=device)
 
         for _ in range(1024):
@@ -444,6 +453,11 @@ def generate_for_target(
             logits = out.logits[0, -1, :].float()
 
             logits += pitch_mask
+
+            # CR-06: 과거 TIME 토큰 차단 — 모델 환각으로 시간이 역행하는 것을 방지
+            if last_time_val >= 0:
+                for tid in TIME_IDS[:last_time_val + 1]:
+                    logits[tid] = -1e9
 
             if target_playing:
                 logits[INST_TARGET_ID] = -1e9
@@ -471,9 +485,14 @@ def generate_for_target(
             if next_tok == BAR_START_ID:
                 bar_count += 1
                 target_playing = False
+                last_time_val  = -1   # 마디 전환 시 TIME 추적 리셋
                 if bar_count > window_bars: break
             elif next_tok in (PIECE_END_ID, EOS_ID):
                 break
+
+            # CR-06: TIME 토큰이면 last_time_val 갱신
+            if next_tok in TIME_IDS:
+                last_time_val = TIME_IDS.index(next_tok)
 
             cur_in = torch.tensor([[next_tok]], dtype=torch.long, device=device)
 
@@ -567,7 +586,12 @@ def decode_tokens(tokens, source_pm, target_prog,
 # ──────────────────────────────────────────────
 # 11. 후처리 (postprocess)
 # ──────────────────────────────────────────────
-def postprocess(notes, pitch_min, pitch_max):
+
+# 단선율 악기 목록 — 이 악기에만 모노포니 강제 적용
+# keyboard, guitar, ensemble, organ, synth 등 화음/패드 악기에는 적용하지 않음
+MONOPHONIC_INSTRUMENTS = {"bass", "saxophone", "woodwind", "violin", "brass"}
+
+def postprocess(notes, pitch_min, pitch_max, target_name=None):
     # 1. 음역 클리핑
     notes = [n for n in notes if pitch_min <= n["pitch"] <= pitch_max]
 
@@ -579,16 +603,18 @@ def postprocess(notes, pitch_min, pitch_max):
     # 3. 초단음 제거
     notes = [n for n in notes if (n["end"] - n["start"]) >= 0.05]
 
-    # 4. 모노포니 강제
-    notes = sorted(notes, key=lambda x: x["start"])
-    mono  = []
-    for n in notes:
-        if mono and n["start"] < mono[-1]["end"]:
-            mono[-1]["end"] = n["start"]
-            if mono[-1]["end"] - mono[-1]["start"] < 0.05:
-                mono.pop()
-        mono.append(n)
-    notes = mono
+    # 4. 단선율 악기에만 모노포니 강제
+    #    keyboard, guitar, ensemble 등 화음 악기는 건드리지 않음
+    if target_name in MONOPHONIC_INSTRUMENTS:
+        notes = sorted(notes, key=lambda x: x["start"])
+        mono  = []
+        for n in notes:
+            if mono and n["start"] < mono[-1]["end"]:
+                mono[-1]["end"] = n["start"]
+                if mono[-1]["end"] - mono[-1]["start"] < 0.05:
+                    mono.pop()
+            mono.append(n)
+        notes = mono
 
     # 5. 윈도우 경계 갭 채우기 (30ms 미만)
     LEGATO_GAP = 0.03
@@ -640,17 +666,18 @@ def save_midi(notes, source_pm, output_path, target_prog, target_name):
 # 13. 공개 API: run_arrangement
 # ──────────────────────────────────────────────
 def run_arrangement(
-    song_path:   str,
-    target:      str,
-    genre:       str,
-    temperature: float,
+    song_path:     str,
+    target:        str,
+    genre:         str,
+    temperature:   float,
     pitch_min,
     pitch_max,
-    output_path: str,
+    output_path:   str,
     model,
-    vocab:       dict,
-    vocab_r:     dict,
+    vocab:         dict,
+    vocab_r:       dict,
     device,
+    progress_hook = None,
 ) -> str:
     """편곡 추론 실행. 결과 MIDI 경로 반환.
 
@@ -660,17 +687,18 @@ def run_arrangement(
     arrangement.py 호출 예시:
         result_path = await loop.run_in_executor(
             None, run_arrangement,
-            str(midi_path),           # song_path
-            target_name,              # target
-            request.genre,            # genre
-            request.temperature,      # temperature
-            request.minNote,          # pitch_min
-            request.maxNote,          # pitch_max
-            str(output_path),         # output_path
-            loaded.model,             # model
-            loaded.vocab,             # vocab
-            loaded.vocab_r,           # vocab_r
-            loaded.device,            # device
+            str(midi_path),           # 1: song_path
+            target_name,              # 2: target
+            request.genre,            # 3: genre
+            request.temperature,      # 4: temperature
+            request.minNote,          # 5: pitch_min
+            request.maxNote,          # 6: pitch_max
+            str(output_path),         # 7: output_path
+            loaded.model,             # 8: model
+            loaded.vocab,             # 9: vocab
+            loaded.vocab_r,           # 10: vocab_r
+            loaded.device,            # 11: device
+            inference_progress_hook,  # 12: progress_hook
         )
 
     Args:
@@ -733,11 +761,11 @@ def run_arrangement(
         vocab, vocab_r, source_pm, _device,
         rest_penalty=rest_penalty,
         fade_bars=fade_bars,
-        progress_hook=None,   # arrangement.py가 progress_hook을 별도로 관리
+        progress_hook=progress_hook,   # arrangement.py에서 주입된 콜백 포워딩
     )
 
     logger.info(f"디코딩 노트: {len(all_notes)}")
-    all_notes = postprocess(all_notes, pitch_min, pitch_max)
+    all_notes = postprocess(all_notes, pitch_min, pitch_max, target_name=target)
     logger.info(f"후처리 후: {len(all_notes)}")
 
     if not all_notes:
