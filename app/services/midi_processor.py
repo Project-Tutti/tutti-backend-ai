@@ -97,17 +97,25 @@ def _remap_type1(mid: mido.MidiFile, mappings: list) -> None:
         if mapping.targetInstrumentId == DROP_INSTRUMENT_ID:
             tracks_to_delete.add(idx)
         else:
+            is_drum = mapping.targetInstrumentId >= 128
+            target_prog = 0 if is_drum else mapping.targetInstrumentId
+
             # program_change 존재 여부 확인 후 변경 또는 삽입
             has_program_change = False
             for msg in mid.tracks[idx]:
+                if hasattr(msg, 'channel'):
+                    if is_drum:
+                        msg.channel = 9
+                    elif msg.channel == 9:
+                        msg.channel = 0
                 if msg.type == "program_change":
-                    msg.program = mapping.targetInstrumentId
+                    msg.program = target_prog
                     has_program_change = True
 
             # program_change가 없으면 트랙 맨 앞에 삽입
             if not has_program_change:
                 # 첫 번째 채널 메시지에서 channel 추출, 없으면 0
-                track_channel = 0
+                track_channel = 9 if is_drum else 0
                 for msg in mid.tracks[idx]:
                     if hasattr(msg, 'channel'):
                         track_channel = msg.channel
@@ -115,13 +123,13 @@ def _remap_type1(mid: mido.MidiFile, mappings: list) -> None:
                 pc = mido.Message(
                     'program_change',
                     channel=track_channel,
-                    program=mapping.targetInstrumentId,
+                    program=target_prog,
                     time=0,
                 )
                 mid.tracks[idx].insert(0, pc)
                 logger.info(
                     f"트랙 {idx}에 program_change 삽입: "
-                    f"ch={track_channel}, prog={mapping.targetInstrumentId}"
+                    f"ch={track_channel}, prog={target_prog}"
                 )
 
     # 역순 삭제 (인덱스 밀림 방지)
@@ -156,28 +164,7 @@ def _remap_type0(mid: mido.MidiFile, mappings: list) -> None:
         else:
             channel_remap[ch] = mapping.targetInstrumentId
 
-    # program_change 변경 + 미존재 채널에 삽입
-    channels_with_pc = set()
-    for msg in track:
-        if msg.type == "program_change" and msg.channel in channel_remap:
-            msg.program = channel_remap[msg.channel]
-            channels_with_pc.add(msg.channel)
-
-    # program_change가 없는 채널에 트랙 맨 앞 삽입
-    for ch, target_prog in channel_remap.items():
-        if ch not in channels_with_pc:
-            pc = mido.Message(
-                'program_change',
-                channel=ch,
-                program=target_prog,
-                time=0,
-            )
-            track.insert(0, pc)
-            logger.info(
-                f"Type 0 채널 {ch}에 program_change 삽입: prog={target_prog}"
-            )
-
-    # 채널 삭제: 해당 채널의 모든 채널 메시지 제거
+    # 1. 채널 삭제 먼저 수행 (이후 channel 변경 시 충돌 방지)
     # 주의: meta 메시지(tempo, time_signature 등)는 channel이 없으므로 유지됨
     # 중요: mido는 delta time 기반이므로, 삭제된 메시지의 time을
     #        다음 생존 메시지에 누적해야 타이밍이 보존됨
@@ -193,4 +180,41 @@ def _remap_type0(mid: mido.MidiFile, mappings: list) -> None:
                 accumulated_time = 0
                 new_track.append(msg)
         mid.tracks[0] = new_track
+        track = mid.tracks[0]
         logger.info(f"Type 0 채널 삭제: {channels_to_delete}")
+
+    # 2. program_change 및 channel 변경
+    channels_with_pc = set()
+    for msg in track:
+        if hasattr(msg, 'channel') and msg.channel in channel_remap:
+            orig_ch = msg.channel
+            target_prog = channel_remap[orig_ch]
+            is_drum = target_prog >= 128
+            safe_prog = 0 if is_drum else target_prog
+
+            if is_drum:
+                msg.channel = 9
+            elif msg.channel == 9:
+                msg.channel = 0
+
+            if msg.type == "program_change":
+                msg.program = safe_prog
+                channels_with_pc.add(orig_ch)
+
+    # 3. program_change가 없는 채널에 트랙 맨 앞 삽입
+    for ch, target_prog in channel_remap.items():
+        if ch not in channels_with_pc:
+            is_drum = target_prog >= 128
+            safe_prog = 0 if is_drum else target_prog
+            new_ch = 9 if is_drum else (0 if ch == 9 else ch)
+            
+            pc = mido.Message(
+                'program_change',
+                channel=new_ch,
+                program=safe_prog,
+                time=0,
+            )
+            track.insert(0, pc)
+            logger.info(
+                f"Type 0 채널 {ch}에 program_change 삽입: prog={safe_prog} (ch={new_ch})"
+            )
