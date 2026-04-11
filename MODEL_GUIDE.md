@@ -55,12 +55,19 @@ scp -r ./new_best_model globaltutti@<온프레미스_IP>:~/tutti-backend-ai/mode
       "type": "qwen2.5",
       "name": "Tutti Unified v2 (신규 버전)",
       "path": "new_best_model", 
-      "description": "새롭게 학습된 대규모 모델 적용"
+      "description": "새롭게 학습된 대규모 모델 적용",
+      "active": true
     }
   ]
 }
 ```
 - `path`: 1단계에서 서버에 복사해 둔 폴더명(예: `new_best_model`)을 적습니다.
+- `active`: (선택) `false`로 설정하면 서버 메모리에 해당 모델을 로드하지 않고 완전히 건너뜁니다. 과거 모델의 정보만 백업용으로 남겨둘 때 유용합니다.
+
+> [!CAUTION]
+> **동일한 `type`을 가진 모델을 두 개 이상 동시에 활성화할 수 없습니다!**
+> 서버는 메모리에 모델을 로드할 때 `"type"` 값을 고유 식별자(Key)로 사용합니다. 따라서 `"active": true` 상태인 배열 내의 모델들 중 `"type": "qwen2.5"`처럼 똑같은 타입 값이 중복으로 존재해서는 안 됩니다 (나중에 작성된 모델로 덮어씌워짐).  
+> 여러 개의 모델 정보를 적어두려면 반드시 사용하지 않는 예전 버전을 `"active": false`로 명시하세요.
 
 ### 3.2. GitHub 커밋 및 푸시 (자동 배포)
 파일 저장이 끝났다면, Git에 커밋하고 `main` 브랜치에 Push합니다.

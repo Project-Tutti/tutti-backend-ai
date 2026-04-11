@@ -56,12 +56,16 @@ class ModelRegistry:
         """앱 시작 시 registry.json의 모든 모델을 로드"""
         self._load_registry_config()
 
-        # 기본 모델 설정: registry.json의 "default" 필드
+        # 기본 모델 설정: registry.json의 "default" 필드 (model_type 기준)
         self._default_model_type = self._registry_config.get("default")
 
         models = self._registry_config.get("models", [])
 
         for idx, model_cfg in enumerate(models):
+            # 활성화 여부 확인 (디폴트는 true)
+            if not model_cfg.get("active", True):
+                continue
+                
             model_type = model_cfg["type"]        # "qwen2.5"
             ckpt_path  = self._model_dir / model_cfg["path"]  # "best"
             name       = model_cfg.get("name", model_type)
