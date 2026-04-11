@@ -1,7 +1,7 @@
-# 🏗️ 온프레미스 AI 서버 셋업 가이드
+# 🏗️ 온프레미스 AI 서버 셋업 가이드 (Redis Streams 기반)
 
 > **대상 서버**: Ubuntu + RTX 4090 (GPU 드라이버 설치 완료 상태)
-> **목표**: Docker Compose 기반 AI 편곡 서버 2대 + Nginx + Cloudflare Tunnel 구동
+> **목표**: GPU 자원 보호를 위한 단일 Redis Worker 컨테이너 무중단 동작
 
 ---
 
@@ -10,14 +10,14 @@
 1. [사전 확인](#1-사전-확인)
 2. [Docker Engine 설치](#2-docker-engine-설치)
 3. [NVIDIA Container Toolkit 설치](#3-nvidia-container-toolkit-설치)
-4. [Cloudflare Tunnel 설치 및 구성](#4-cloudflare-tunnel-설치-및-구성)
-5. [GCP Artifact Registry 인증](#5-gcp-artifact-registry-인증)
-6. [모델 파일 배치](#6-모델-파일-배치)
-7. [서비스 실행](#7-서비스-실행)
-8. [서비스 관리 명령어](#8-서비스-관리-명령어)
-9. [GitHub Actions Self-Hosted Runner 셋업 (권장)](#9-github-actions-self-hosted-runner-셋업-필수-권장)
-10. [트러블슈팅](#10-트러블슈팅)
-11. [GPU 시분할 및 MPS 설정 (선택)](#11-gpu-시분할-및-mps-설정-선택)
+4. [GCP Artifact Registry 인증](#4-gcp-artifact-registry-인증)
+5. [모델 파일 배치](#5-모델-파일-배치)
+6. [서비스 실행](#6-서비스-실행)
+7. [서비스 관리 명령어](#7-서비스-관리-명령어)
+8. [GitHub Actions Self-Hosted Runner 셋업 (권장)](#8-github-actions-self-hosted-runner-셋업-필수-권장)
+9. [트러블슈팅](#9-트러블슈팅)
+
+*(비고: 기존 HTTP 통신 기반의 아키텍처는 `REDIS_ARCHITECTURE.md`를 참고하여 전면 개편되었습니다.)*
 
 ---
 
@@ -29,10 +29,6 @@ nvidia-smi
 
 # Ubuntu 버전 확인
 lsb_release -a
-
-# 예상 출력:
-# NVIDIA-SMI 5xx.xx   Driver Version: 5xx.xx   CUDA Version: 12.x
-# Ubuntu 22.04 LTS (또는 24.04 LTS)
 ```
 
 > [!IMPORTANT]
@@ -88,19 +84,6 @@ sudo usermod -aG docker $USER
 newgrp docker
 ```
 
-### 2.5 설치 확인
-
-```bash
-docker --version
-# Docker version 27.x.x
-
-docker compose version
-# Docker Compose version v2.x.x
-
-# 테스트 컨테이너 실행
-docker run --rm hello-world
-```
-
 ---
 
 ## 3. NVIDIA Container Toolkit 설치
@@ -138,69 +121,13 @@ sudo systemctl restart docker
 docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi
 ```
 
-> [!TIP]
-> 위 명령이 호스트의 `nvidia-smi`와 동일한 GPU 정보를 출력하면 성공입니다.
-
 ---
 
-## 4. Cloudflare Tunnel 설치 및 구성
-
-### 4.1 cloudflared 설치
-
-```bash
-# 바이너리 직접 설치
-curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
-  -o /usr/local/bin/cloudflared
-chmod +x /usr/local/bin/cloudflared
-
-# 설치 확인
-cloudflared --version
-```
-
-### 4.2 Cloudflare 로그인
-
-```bash
-cloudflared tunnel login
-# → 브라우저가 열립니다. 도메인이 등록된 Cloudflare 계정으로 로그인
-```
-
-### 4.3 터널 생성
-
-```bash
-cloudflared tunnel create tutti-ai
-# → Tunnel ID가 출력됩니다. 기록해두세요.
-# → ~/.cloudflared/에 인증서 파일이 생성됩니다.
-```
-
-### 4.4 DNS 레코드 연결
-
-```bash
-cloudflared tunnel route dns tutti-ai <AI_SERVER_HOST>
-# → <AI_SERVER_HOST> CNAME 레코드가 자동 생성됩니다.
-```
-
-### 4.5 터널 토큰 발급 (Docker Compose용)
-
-Cloudflare Dashboard에서 터널 토큰을 발급받습니다:
-
-1. [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) 대시보드 접속
-2. **Networks → Tunnels** → `tutti-ai` 터널 선택
-3. **Configure** → **Install and run a connector** 섹션에서 토큰 복사
-4. 토큰을 `.env` 파일의 `TUNNEL_TOKEN`에 설정
-
-> [!IMPORTANT]
-> 터널 설정 시 **Public Hostname**을 추가해야 합니다:
-> - **Subdomain**: `<서브도메인>`
-> - **Domain**: `<도메인>`
-> - **Service**: `http://nginx:80`
-
----
-
-## 5. GCP Artifact Registry 인증
+## 4. GCP Artifact Registry 인증
 
 메인 서버와 동일한 GCP 프로젝트의 Artifact Registry에서 Docker 이미지를 pull합니다.
 
-### 5.1 gcloud CLI 설치 (없는 경우)
+### 4.1 gcloud CLI 설치 (없는 경우)
 
 ```bash
 curl https://sdk.cloud.google.com | bash
@@ -208,54 +135,31 @@ exec -l $SHELL
 gcloud init
 ```
 
-### 5.2 Docker 인증 구성
+### 4.2 Docker 인증 구성
 
 ```bash
-# 방법 1: gcloud 통한 인증 (대화형)
+# 대화형 인증
 gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
-
-# 방법 2: Service Account 키 파일 사용 (자동화용)
-# GitHub Actions에서 사용하는 것과 같은 SA 키 파일을 복사 후:
-cat sa-key.json | docker login -u _json_key --password-stdin https://us-central1-docker.pkg.dev
-```
-
-### 5.3 pull 테스트
-
-```bash
-docker pull us-central1-docker.pkg.dev/<PROJECT_ID>/tutti/ai-server:latest
 ```
 
 ---
 
-## 6. 모델 파일 배치
+## 5. 모델 파일 배치
 
 ```bash
 # 프로젝트 디렉토리 생성
 mkdir -p ~/tutti-backend-ai/models/best
 
-# 모델 파일 다운로드 (GCS에서)
-gsutil cp gs://tutti-ai-models/v1/registry.json ~/tutti-backend-ai/models/registry.json
+# 다운로드 (GCS 등에서)
+gsutil cp gs://tutti-ai-models/v1/registry.json ~/tutti-backend-ai/registry.json
 gsutil cp -r gs://tutti-ai-models/v1/best/ ~/tutti-backend-ai/models/best/
-
-# 또는 직접 복사 (USB, SCP 등)
-# scp user@source-server:/path/to/model.safetensors ~/tutti-backend-ai/models/best/
-```
-
-### 디렉토리 구조 확인
-
-```bash
-tree ~/tutti-backend-ai/models/
-# models/
-# ├── registry.json
-# └── best/
-#     └── model.safetensors
 ```
 
 ---
 
-## 7. 서비스 실행
+## 6. 서비스 실행
 
-### 7.1 프로젝트 클론 (최초 1회)
+### 6.1 프로젝트 클론 (최초 1회)
 
 ```bash
 cd ~
@@ -264,156 +168,73 @@ cd tutti-backend-ai
 ```
 
 > **[권장] Git Sparse-Checkout 설정 (서버 디렉토리 최적화)**
-> 온프레미스 서버는 도커를 통해 실행되므로 앱 소스코드가 파일 시스템에 남아있을 필요가 없습니다. 다음 명령어를 실행하면 서버 구동에 필요한 핵심 설정 파일(`docker-compose.yml`, `nginx`, `models` 등)만 로컬에 남기고 나머지 폴더를 자동으로 정리해줍니다. (추후 `git pull` 동작 시 충돌도 방지됩니다)
->
+> 온프레미스 서버는 도커를 통해 실행되므로 소스코드가 물리 파일 시스템에 남아있을 필요가 없습니다. 다음 명령어를 실행하면 서버 구동에 필요한 핵심 파일만 남겨 최적화됩니다.
 > ```bash
 > git sparse-checkout init --cone
-> git sparse-checkout set docker-compose.yml nginx models
+> git sparse-checkout set docker-compose.yml nginx models registry.json
 > ```
 
-### 7.2 환경 변수 설정
+### 6.2 환경 변수 설정 (.env)
 
 ```bash
-cp .env.production .env
-
-# .env 파일 편집
 nano .env
 ```
 
-`.env` 파일에서 반드시 설정할 값:
+`.env` 파일에 아래 Redis 및 연결 정보를 설정합니다:
 
 ```env
-TUNNEL_TOKEN=<Cloudflare 대시보드에서 복사한 토큰>
+GCP_PROJECT_ID=여기에값입력
+AI_SERVER_API_KEY=콜백인증키
+REDIS_HOST=xxx.upstash.io
+REDIS_PORT=6379
+REDIS_PASSWORD=xxx...
+REDIS_TLS=true
+LOG_LEVEL=info
 ```
 
-### 7.3 서비스 시작
+### 6.3 서비스 시작
 
 ```bash
-# AI Worker 2대 + Nginx + Cloudflare Tunnel 시작
-docker compose up -d --scale ai-server=2
+# AI Worker 단독 백그라운드 구동 (FastAPI 라우팅 없음)
+docker compose up -d
 
 # 상태 확인
 docker compose ps
 ```
 
-### 7.4 동작 확인
-
-```bash
-# 로컬에서 health check
-curl http://localhost:8080/health
-
-# 외부에서 확인 (다른 컴퓨터에서)
-curl https://<AI_SERVER_HOST>/health
-```
-
 ---
 
-## 8. 서비스 관리 명령어
+## 7. 서비스 관리 명령어
 
 ### 로그 확인
 
 ```bash
-# 전체 로그
-docker compose logs -f
-
-# 특정 서비스 로그
-docker compose logs -f ai-server
-docker compose logs -f nginx
-docker compose logs -f cloudflared
+# Redis Worker 루프 모니터링
+docker compose logs -f ai-worker
 ```
 
-### 서비스 재시작
+### 서비스 재시작 및 업데이트
 
 ```bash
-# 전체 재시작
-docker compose restart
-
-# AI 서버만 재시작
-docker compose restart ai-server
-```
-
-### 이미지 업데이트 (새 배포)
-
-```bash
-cd ~/tutti-backend-ai
-git pull origin main
-
-# 새 이미지 pull + 재시작
-docker compose pull ai-server
-docker compose up -d --scale ai-server=2
-```
-
-### 서비스 중지
-
-```bash
-docker compose down
-```
-
-### Worker 수 조정
-
-```bash
-# 3대로 확장
-docker compose up -d --scale ai-server=3
-
-# 1대로 축소
-docker compose up -d --scale ai-server=1
+# 이미지 업데이트 및 롤아웃 (Zero-downtime grace period 10min)
+docker compose pull
+docker compose up -d --remove-orphans
 ```
 
 ---
 
-## 9. GitHub Actions Self-Hosted Runner 셋업 (필수 권장)
+## 8. GitHub Actions Self-Hosted Runner 셋업 (필수 권장)
 
-보안과 배포 안정성을 위해 SSH 개방 대신 데몬 방식의 Runner 운영을 권장합니다.
-포트포워딩 없이도 GitHub 클라우드와 터널링되어 안전하게 무중단 배포를 실행할 수 있습니다.
-
-### 9.1 GitHub에서 설치 토큰(Token) 발급받기
-1. 해당 리포지토리의 **Settings** -> 좌측 메뉴 보안/자동화의 **Actions** -> **Runners** 클릭
-2. 우측 상단의 **[New self-hosted runner]** 버튼 클릭
-3. Runner image로 **Linux**, Architecture는 **x64** 선택
-
-### 9.2 온프레미스 서버에 Runner 설치 (터미널)
-GitHub 화면에 뜨는 'Download' 및 'Configure' 명령어를 복사하여 붙여넣습니다. (아래는 예시입니다)
-
-```bash
-# 폴더 생성 및 이동
-mkdir actions-runner && cd actions-runner
-
-# 최신 릴리즈 다운로드 및 압축 해제 (버전은 GitHub 안내 화면 참조)
-curl -o actions-runner-linux-x64-2.x.x.tar.gz -L https://github.com/actions/runner/releases/download/v2.x.x/actions-runner-linux-x64-2.x.x.tar.gz
-tar xzf ./actions-runner-linux-x64-2.x.x.tar.gz
-
-# 설정 진행 (기본값 엔터, GitHub 화면의 명령어 그대로 복사)
-./config.sh --url https://github.com/Project-Tutti/tutti-backend-ai --token <YOUR_TOKEN>
-```
-
-### 9.3 백그라운드 서비스(Daemon)로 등록
-재부팅되어도 자동으로 Runner가 실행되도록 시스템 데몬으로 등록해야 합니다.
-
-```bash
-# 서비스 인스톨 (sudo 권한 필요)
-sudo ./svc.sh install
-
-# 서비스 시작
-sudo ./svc.sh start
-
-# 서비스 상태 확인
-sudo ./svc.sh status
-```
-
-> [!TIP]
-> 이제 GitHub 저장소의 `Settings` -> `Actions` -> `Runners` 메뉴에 들어가면 **Idle (녹색 불)** 상태로 서버가 대기 중인 것을 확인할 수 있습니다. 이제부터 코드가 푸시되면 외부 간섭 없이 알아서 온프렘 서버에서 `docker compose up -d` 롤아웃이 실행됩니다.
+보안과 배포 자동화를 위해 GitHub Actions 클라우드와 터널링되어 안전하게 무중단 배포를 실행하는 Runner 설치를 권장합니다.
+GitHub Repository의 `Settings` -> `Actions` -> `Runners` 메뉴에서 지침을 따르세요.
 
 ---
 
-## 10. 트러블슈팅
+## 9. 트러블슈팅
 
 ### GPU가 컨테이너에서 인식되지 않는 경우
 
 ```bash
-# Docker 런타임 확인
-docker info | grep -i runtime
-# → nvidia 런타임이 목록에 있어야 함
-
 # 직접 GPU 테스트
 docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi
 
@@ -422,102 +243,17 @@ sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
 ```
 
-### Cloudflare Tunnel 연결이 안 되는 경우
+### Worker 큐 수신 실패 (Redis 연결 에러)
 
 ```bash
-# 터널 상태 확인
-docker compose logs cloudflared
+# 워커 로그 확인 (Redis 연결 실패 시 Traceback 출력됨)
+docker compose logs ai-worker | grep "Redis"
 
-# 로컬에서 Nginx 직접 접근 테스트
-curl http://localhost:8080/health
-
-# TUNNEL_TOKEN이 올바른지 확인
-cat .env | grep TUNNEL_TOKEN
-```
-
-### 모델 로드 실패
-
-```bash
-# 모델 파일 존재 확인
-ls -la ~/tutti-backend-ai/models/best/
-
-# registry.json 확인
-cat ~/tutti-backend-ai/models/registry.json
-
-# AI 서버 로그에서 에러 확인
-docker compose logs ai-server | grep -i error
+# REDIS_TLS=true 여부 점검 (Upstash 사용 시 필수)
+cat .env | grep REDIS_TLS
 ```
 
 ### 메모리 부족 (OOM)
 
-```bash
-# GPU 메모리 사용량 확인
-nvidia-smi
-
-# Worker가 너무 많으면 축소
-docker compose up -d --scale ai-server=1
-```
-
----
-
-## 11. GPU 시분할 및 MPS 설정 (선택)
-
-### 기본 동작: 시분할 (Time-Slicing)
-
-2대의 AI 컨테이너가 동일 GPU를 사용할 때, 기본적으로 **시분할 방식**으로 GPU를 공유합니다.
-별도 설정 없이 동작하며, Qwen2.5-0.5B 2대 정도는 충분히 처리 가능합니다.
-
-- 단독 실행 대비 ~10-20% 오버헤드 발생 가능
-- 대부분의 워크로드에서 체감 차이 없음
-
-### CUDA MPS (Multi-Process Service) — 선택 사항
-
-동시 요청이 빈번하고 개별 추론 시간이 중요한 경우, MPS를 활성화하면 GPU 활용률이 향상됩니다.
-
-```bash
-# MPS 제어 데몬 시작
-sudo nvidia-cuda-mps-control -d
-
-# MPS 상태 확인
-echo get_server_list | nvidia-cuda-mps-control
-
-# MPS 종료
-echo quit | nvidia-cuda-mps-control
-```
-
-> [!NOTE]
-> - MPS는 **동일 GPU에서 다수 프로세스의 GPU 커널을 동시 실행**할 수 있게 해줍니다.
-> - 0.5B 모델 2대에서는 기본 시분할로 충분하므로-**초기에는 설정하지 않아도 됩니다.**
-> - 성능 병목이 확인된 후에 MPS 적용을 검토하세요.
-
----
-
-## 아키텍처 요약
-
-```
-외부 요청 (Main Server, GKE)
-    │
-    │  HTTPS
-    ▼
-Cloudflare Edge (<AI_SERVER_HOST>)
-    │
-    │  Cloudflare Tunnel (암호화)
-    ▼
-┌─────────────────────────────────────────┐
-│  학교 서버 (RTX 4090)                      │
-│                                         │
-│  cloudflared ─── Nginx (:80)            │
-│                   │                     │
-│            ┌──────┴──────┐              │
-│            ▼             ▼              │
-│      ai-server-1   ai-server-2          │
-│       (:8000)       (:8000)             │
-│            │             │              │
-│            └──────┬──────┘              │
-│                   ▼                     │
-│              RTX 4090 GPU               │
-│           (시분할 공유)                   │
-│                                         │
-│         ./models/ (로컬 볼륨)             │
-└─────────────────────────────────────────┘
-```
+본 아키텍처는 단일 Worker 동기 처리(Synchronous Queue Pull) 방식이므로 **일반적인 상황에서는 OOM이 발생하지 않습니다.**
+단, 모델 가중치 파일 크기가 24GB를 근접하여 초과할 경우 `registry.json`의 active 모델 개수를 조절해 주세요.

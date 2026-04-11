@@ -5,24 +5,25 @@ Takes multi-track MIDI input, generates complementary instrumental tracks using 
 
 ## Architecture
 
-- **Web Framework**: FastAPI (Uvicorn backend)
+- **Message Broker**: Upstash Serverless Redis (Streams)
+- **Worker Execution**: Pure Python single-threaded event loop (No web framework overhead)
 - **Model Registry**: Dynamic loading based on `registry.json` from Google Cloud Storage
-- **Orchestration**: Asynchronous execution tracking job progress and firing HTTP webhooks
-- **Containerization**: Lean Docker container meant to be deployed as a GKE Deployment
-- **Scaling**: CPU utilized HPA scaling
+- **Orchestration**: Asynchronous polling (`XREADGROUP`) and HTTP webhooks for progress/completion
+- **Containerization**: Lean Docker container meant to be deployed via Docker Compose on-premise
+- **Scaling**: Controlled vertically by GPU VRAM, single worker execution block to avoid OOM
 
 ## Environment Setup
 
 Copy `.env.example` to `.env`:
 
-```
-HOST=0.0.0.0
-PORT=8000
+```env
+GCP_PROJECT_ID=tutti-production
+AI_SERVER_API_KEY=xxx...
 LOG_LEVEL=info
-MODEL_DIR=/models
-RESULTS_DIR=/tmp/results
-GCS_MODEL_BUCKET=tutti-ai-models
-MODEL_VERSION=v1
+REDIS_HOST=xxx.upstash.io
+REDIS_PORT=6379
+REDIS_PASSWORD=xxx...
+REDIS_TLS=true
 ```
 
 ## Running Locally
@@ -51,18 +52,17 @@ MODEL_VERSION=v1
 pip install -r requirements.txt
 ```
 
-4. Run server:
+4. Run worker (using docker-compose is recommended):
 
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+docker compose up -d
 ```
+(Alternatively, to run natively: `python3.11 worker.py`)
 
 ## Adding New Instruments
 
 Hot-loading is supported:
 
-1. Upload the `.pt` or `.onnx` file to GCS
-2. Add corresponding JSON block in `registry.json` tracking the `midi_program` target
-3. Perform a rollout restart on the `ai-server` deployment `kubectl rollout restart deployment/ai-server -n tutti`
+3. Restart the `ai-worker` container: `docker compose restart ai-worker`
 
 > _Note: Model cache architecture (`app/core/model_cache.py`) is stubbed pending Google Colab definitions porting._
