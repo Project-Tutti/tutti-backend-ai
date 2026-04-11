@@ -5,16 +5,25 @@
 # ═══════════════════════════════════════════════════════════
 
 services:
+  # ══════════════════════════════════════════════════════════════
+  # HTTP 인프라 (기본 비활성)
+  # ──────────────────────────────────────────────────────────────
+  # 아래 3개 서비스(cloudflared, nginx, ai-server)는 기존 HTTP 경로용입니다.
+  # 프로덕션 트래픽이 Redis Stream → ai-worker로 전환되어 기본 비활성 상태입니다.
+  #
+  # HTTP 디버깅이 필요하면:
+  #   docker compose up -d --scale ai-server=1 --scale nginx=1 --scale cloudflared=1
+  # ══════════════════════════════════════════════════════════════
+
   # ── Cloudflare Tunnel: 외부 접근 (AI_SERVER_HOST → nginx) ──
   cloudflared:
     image: cloudflare/cloudflared:latest
     command: tunnel run
     environment:
       - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    deploy:
+      replicas: 0
     restart: unless-stopped
-    depends_on:
-      nginx:
-        condition: service_started
 
   # ── Nginx: 로드밸런서 (라운드로빈) ──
   nginx:
@@ -23,12 +32,11 @@ services:
       - "127.0.0.1:8080:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      ai-server:
-        condition: service_healthy
+    deploy:
+      replicas: 0
     restart: unless-stopped
 
-  # ── AI Server: 추론 워커 (--scale로 복제) ──
+  # ── AI Server: 기존 FastAPI ──
   ai-server:
     image: us-central1-docker.pkg.dev/${GCP_PROJECT_ID}/tutti/ai-server:latest
     environment:
@@ -41,10 +49,7 @@ services:
       - ./models:/models:ro
       - ai-results:/tmp/results
     deploy:
-      replicas: 2
-      update_config:
-        parallelism: 1
-        order: start-first
+      replicas: 0
       resources:
         reservations:
           devices:
@@ -57,6 +62,38 @@ services:
       timeout: 10s
       retries: 3
       start_period: 180s
+    restart: unless-stopped
+
+  # ── AI Worker: Redis Streams 소비자 (편곡 큐 처리) ──
+  ai-worker:
+    image: us-central1-docker.pkg.dev/${GCP_PROJECT_ID}/tutti/ai-server:latest
+    command: ["python3.11", "worker.py"]
+    environment:
+      - MODEL_DIR=/models
+      - RESULTS_DIR=/tmp/results
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - GPU_ID=0
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_TLS=${REDIS_TLS:-false}
+    volumes:
+      - ./models:/models:ro
+      - ai-results:/tmp/results
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["3"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    stop_grace_period: 10m
     restart: unless-stopped
 
 volumes:

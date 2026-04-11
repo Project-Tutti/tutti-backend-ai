@@ -64,6 +64,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 
 # 애플리케이션 소스 복사
 COPY app/ ./app/
+COPY worker.py ./worker.py
 
 # Environment defaults
 ENV HOST=0.0.0.0

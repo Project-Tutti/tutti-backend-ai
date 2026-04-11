@@ -87,6 +87,10 @@ jobs:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           AI_SERVER_API_KEY: ${{ secrets.AI_SERVER_API_KEY }}
           LOG_LEVEL: ${{ secrets.LOG_LEVEL }}
+          REDIS_HOST: ${{ secrets.REDIS_HOST }}
+          REDIS_PORT: ${{ secrets.REDIS_PORT }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          REDIS_TLS: ${{ secrets.REDIS_TLS }}
         run: |
           cd ~/tutti-backend-ai
 
@@ -110,9 +114,13 @@ jobs:
           echo "GCP_PROJECT_ID=${GCP_PROJECT_ID}" >> .env
           echo "AI_SERVER_API_KEY=${AI_SERVER_API_KEY}" >> .env
           echo "LOG_LEVEL=${LOG_LEVEL:-info}" >> .env
+          echo "REDIS_HOST=${REDIS_HOST}" >> .env
+          echo "REDIS_PORT=${REDIS_PORT:-6379}" >> .env
+          echo "REDIS_PASSWORD=${REDIS_PASSWORD}" >> .env
+          echo "REDIS_TLS=${REDIS_TLS:-false}" >> .env
 
           echo "📦 3. Pulling latest artifacts..."
-          docker compose pull ai-server
+          docker compose pull
 
           echo "🔄 4. Rolling update with Zero-Downtime config..."
           docker compose up -d --remove-orphans
@@ -120,12 +128,13 @@ jobs:
           echo "🧹 5. Cleaning up old unused Docker images..."
           docker image prune -f
 
-          echo "⏳ Waiting for initial rollout synchronization..."
-          sleep 15
-
           echo "📋 Service status:"
           docker compose ps
 
           echo ""
-          echo "🏥 Health check:"
-          curl -sf http://localhost:8080/health && echo " ✅ Nginx API Ready" || echo " ❌ Check Wait State"
+          echo "🏥 Health check (Worker):"
+          echo "  ⏳ 모델 로딩에 최대 3분 소요됩니다."
+          echo "  즉시 확인: docker compose exec ai-worker curl -sf http://localhost:8000/health"
+          docker compose ps ai-worker --format '{{.Health}}' | grep -qi healthy \
+            && echo "  ✅ Worker Ready" \
+            || echo "  ⏳ Worker starting — 모델 로딩 중 (docker compose logs -f ai-worker 로 확인)"
