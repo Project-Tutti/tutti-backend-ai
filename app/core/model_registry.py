@@ -93,9 +93,22 @@ class ModelRegistry:
         if model_type == "qwen2.5":
             from app.services.inference import build_v5_vocab, load_model
             import torch
+            import json
 
             device = f"cuda" if torch.cuda.is_available() else "cpu"
-            vocab = build_v5_vocab()
+            
+            # config.json을 읽어 실제 vocab_size 파악
+            actual_vocab_size = 682
+            config_path = ckpt_path / "config.json"
+            if config_path.exists():
+                try:
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        cfg = json.load(f)
+                        actual_vocab_size = cfg.get("vocab_size", 682)
+                except Exception as e:
+                    logger.warning(f"config.json 파싱 실패, 기본값 682 사용: {e}")
+
+            vocab = build_v5_vocab(actual_vocab_size=actual_vocab_size)
             vocab_r = {v: k for k, v in vocab.items()}
             model = load_model(str(ckpt_path), len(vocab), vocab, device)
 

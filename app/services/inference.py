@@ -109,7 +109,7 @@ def resolve_target(instrument_id: int) -> str:
 # ──────────────────────────────────────────────
 # 3. Vocabulary  (682 토큰)
 # ──────────────────────────────────────────────
-def build_v5_vocab():
+def build_v5_vocab(actual_vocab_size: int = 682):
     vocab = {}
     def add(prefix, r):
         for i in r: vocab[f"{prefix}{i}"] = len(vocab)
@@ -122,8 +122,9 @@ def build_v5_vocab():
     for r in roots:
         for m in [":maj",":min"]: vocab[f"KEY_{r}{m}"] = len(vocab)
     vocab["KEY_NONE"] = len(vocab)
-    # TARGET_ 토큰 3종 — 기존 체크포인트(vocab_size=682)와 정합성 유지를 위해 반드시 유지
-    for p in [40, 68, 73]: vocab[f"TARGET_{p}"] = len(vocab)
+    # vocab_size가 682 이상일 때만 기존 TARGET_ 토큰 3종 포함
+    if actual_vocab_size >= 682:
+        for p in [40, 68, 73]: vocab[f"TARGET_{p}"] = len(vocab)
     for m in ["4:4","3:4","2:4","6:8","12:8","OTHER"]:
         vocab[f"METER_{m}"] = len(vocab)
     add("DENSITY_", range(1,6))
