@@ -5,8 +5,16 @@
     {
       "type": "qwen2.5",
       "name": "Tutti Unified v1",
-      "path": "best",
-      "description": "Qwen2.5-0.5B 기반 13그룹 통합 모델"
+      "path": "v1_260000",
+      "description": "Qwen2.5-0.5B 기반 13그룹 통합 모델(vocab 679)",
+      "active": false
+    }, 
+    {
+      "type": "qwen2.5",
+      "name": "Tutti Unified v2",
+      "path": "v2_260411",
+      "description": "Qwen2.5-0.5B 기반 13그룹 통합 모델(vocab 679)",
+      "active": true
     }
   ]
 }
