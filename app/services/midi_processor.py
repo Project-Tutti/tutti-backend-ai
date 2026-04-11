@@ -132,18 +132,31 @@ def _remap_type1(mid: mido.MidiFile, mappings: list) -> None:
                     f"ch={track_channel}, prog={target_prog}"
                 )
 
-    # 역순 삭제 (인덱스 밀림 방지)
+    # 역순 처리 (인덱스 밀림 방지 용도였으나 필터링 방식으로 변경되어 역순 유지는 안전을 위해 그대로 둠)
     for idx in sorted(tracks_to_delete, reverse=True):
         # 메타 전용 트랙 보호: set_tempo, time_signature 등 글로벌 정보 소실 방지
         is_meta_only = all(msg.is_meta for msg in mid.tracks[idx])
         if is_meta_only:
             logger.warning(
                 f"trackIndex {idx}는 메타 전용 트랙(tempo/time_signature 등)이므로 "
-                f"삭제하지 않습니다."
+                f"삭제 처리에서 제외합니다."
             )
             continue
-        logger.info(f"트랙 삭제: index={idx}")
-        del mid.tracks[idx]
+            
+        logger.info(f"트랙 {idx} 채널 이벤트 안전 삭제 (메타/SysEx 보존)")
+        new_track = []
+        accumulated_time = 0
+        for msg in mid.tracks[idx]:
+            # 메타 및 SysEx 보존, 채널 이벤트(음표 등)만 필터링하여 시간 이월
+            if hasattr(msg, 'channel'):
+                accumulated_time += msg.time
+            else:
+                msg = msg.copy(time=msg.time + accumulated_time)
+                accumulated_time = 0
+                new_track.append(msg)
+                
+        # 트랙 객체를 통째로 파괴하지 않고 알맹이만 비워진 상태로 갈아끼움
+        mid.tracks[idx] = new_track
 
 
 def _remap_type0(mid: mido.MidiFile, mappings: list) -> None:

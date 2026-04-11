@@ -33,6 +33,12 @@ async def process_arrangement(request: ArrangeRequest, registry):
         # Step 1: MIDI 다운로드 (10%)
         logger.info(f"[{job_id}] Step 1: Downloading MIDI")
         midi_path = await download_midi(request.midiFilePath)
+        
+        # 순수 원본(Unmodified) 보존을 위해 작업용 복사본 생성
+        import shutil
+        mapped_midi_path = midi_path.with_name(midi_path.stem + "_mapped.mid")
+        shutil.copy2(midi_path, mapped_midi_path)
+        
         await send_callback(cb, secret, {
             "projectId": project_id,
             "versionId": version_id,
@@ -40,12 +46,12 @@ async def process_arrangement(request: ArrangeRequest, registry):
             "progress": 10,
         })
 
-        # Step 2: 원본 트랙 재매핑 (20%)
+        # Step 2: 작업용 복사본에 원본 트랙 재매핑 (20%)
         #   mappings의 targetInstrumentId에 따라:
         #   - 129 → 해당 트랙/채널 삭제
         #   - 그 외 → program_change 변경
-        logger.info(f"[{job_id}] Step 2: Remapping original tracks")
-        remap_original_tracks(midi_path, request.mappings)
+        logger.info(f"[{job_id}] Step 2: Remapping original tracks on mapped copy")
+        remap_original_tracks(mapped_midi_path, request.mappings)
         await send_callback(cb, secret, {
             "projectId": project_id,
             "versionId": version_id,
@@ -84,7 +90,7 @@ async def process_arrangement(request: ArrangeRequest, registry):
         result_path = await loop.run_in_executor(
             None,
             run_arrangement,
-            str(midi_path),         # song_path
+            str(mapped_midi_path),  # song_path (매핑된 컨텍스트)
             target_name,            # target
             request.genre,          # genre
             request.temperature,    # temperature
@@ -95,7 +101,8 @@ async def process_arrangement(request: ArrangeRequest, registry):
             loaded.vocab,           # vocab
             loaded.vocab_r,         # vocab_r
             loaded.device,          # device
-            inference_progress_hook # progress_hook
+            inference_progress_hook,# progress_hook
+            str(midi_path)          # 🚨 순수 원본(Unmodified) 파일 (Append 저장 시 사용)
         )
 
         await send_callback(cb, secret, {
@@ -134,10 +141,14 @@ async def process_arrangement(request: ArrangeRequest, registry):
                 logger.debug(f"[{job_id}] 임시 결과 파일 삭제: {result_file}")
         except Exception:
             pass
-        # 다운로드된 원본 MIDI 정리
+        # 다운로드된 원본 MIDI 및 복사본 정리
         try:
             if midi_path and midi_path.exists():
                 midi_path.unlink()
                 logger.debug(f"[{job_id}] 다운로드 MIDI 삭제: {midi_path}")
+                
+            if 'mapped_midi_path' in locals() and mapped_midi_path.exists():
+                mapped_midi_path.unlink()
+                logger.debug(f"[{job_id}] 매핑된 임시 복사본 삭제: {mapped_midi_path}")
         except Exception:
             pass

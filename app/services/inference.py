@@ -644,23 +644,86 @@ def postprocess(notes, pitch_min, pitch_max, target_name=None):
 # ──────────────────────────────────────────────
 # 12. MIDI 저장 (save_midi)
 # ──────────────────────────────────────────────
-def save_midi(notes, source_pm, output_path, target_prog, target_name):
-    out_pm   = copy.deepcopy(source_pm)
-    new_inst = pretty_midi.Instrument(
-        program=target_prog if target_prog < 128 else 0,
-        is_drum=(target_prog == 128),
-        name=target_name)
+def save_midi(notes, source_pm, output_path, target_prog, target_name, original_song_path=None):
+    """
+    원본 미디 파일(`original_song_path`)에 AI가 생성한 노트들만 새로운 전용 트랙으로
+    덧붙여 저장(Append)합니다. 이렇게 하면 원본 트랙들의 Jitter 발생이나 SysEx 메타데이터
+    손실을 100% 방지할 수 있습니다.
+    """
+    if not original_song_path:
+        raise ValueError("original_song_path is required for Mido Append strategy")
+        
+    import mido
+    mid = mido.MidiFile(original_song_path)
+    
+    # 엣지 1: 원본이 Type-0일 때 다중 트랙 저장을 위해 형식을 Type-1로 강제 전환
+    if mid.type == 0:
+        mid.type = 1
+        
+    new_track = mido.MidiTrack()
+    # 첫 메타 메시지로 트랙 명찰 부여 (악보/DAW 인식용)
+    new_track.append(mido.MetaMessage('track_name', name=f"AI_Generated_{target_name}", time=0))
+    
+    # 엣지 2: 드럼 전용 채널 충돌 및 오버플로우 방어
+    is_drum = (target_prog == 128)
+    msg_prog = 0 if is_drum else target_prog
+    
+    if is_drum:
+        msg_chan = 9  # 드럼 채널은 무조건 9 (MIDI 10번 채널)
+    else:
+        # 사용 중인 전체 채널(0~15) 스캔
+        used_channels = set()
+        for track in mid.tracks:
+            for msg in track:
+                if hasattr(msg, 'channel'):
+                    used_channels.add(msg.channel)
+        
+        # 9번 채널은 악몽의 근원이므로 검색 영역에서 아예 제외(Hard Exclusion)
+        free_channels = [c for c in range(16) if c != 9 and c not in used_channels]
+        if free_channels:
+            msg_chan = free_channels[0]
+        else:
+            # 16개 채널을 모조리 사용한 최악의 곡: 최대한 피해 안 가는 채널 공유 (9번만큼은 제외)
+            fallback = [c for c in range(16) if c != 9]
+            msg_chan = fallback[0] if fallback else 0
+            logger.warning(f"MIDI 16채널 한계 포화 상태 도달! AI 악기가 채널 {msg_chan}을 일부 공유합니다.")
+            
+    # 할당된 채널에 프로그램(악기 톤) 체인지 신호 기록
+    new_track.append(mido.Message('program_change', program=msg_prog, channel=msg_chan, time=0))
+    
+    # 생성된 노트들(absolute seconds)을 절대 틱(Absolute Ticks)으로 재전환
+    events = []
     for n in notes:
-        pitch    = max(0, min(127, int(n["pitch"])))
-        velocity = max(1, min(127, int(n["velocity"])))
-        if n["end"] > n["start"]:
-            new_inst.notes.append(pretty_midi.Note(
-                velocity=velocity, pitch=pitch,
-                start=n["start"], end=n["end"]))
-    out_pm.instruments.append(new_inst)
-    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    out_pm.write(output_path)
-    logger.info(f"저장: {output_path}  ({len(notes)} 노트)")
+        # source_pm.time_to_tick은 매핑본(복사본)이 가진 템포 맵대로 초를 틱으로 반환시킴
+        # 이 매핑본은 원본과 템포가 동일하므로 원본 미디의 틱으로 완벽하게 일치됨.
+        st_tick = int(round(source_pm.time_to_tick(n["start"])))
+        en_tick = int(round(source_pm.time_to_tick(n["end"])))
+        pitch = max(0, min(127, int(n["pitch"])))
+        vel = max(1, min(127, int(n["velocity"])))
+        
+        events.append((st_tick, 'note_on', pitch, vel))
+        events.append((en_tick, 'note_off', pitch, 0))
+        
+    # 절대 틱 기준 시간 순 정렬. 
+    # 동시간대라면 켜기 전 먼저 끄도록(note_off) 우선순위를 부여해 겹친 노트들의 틱 꼬임 방지
+    events.sort(key=lambda x: (x[0], 0 if x[1] == 'note_off' else 1))
+    
+    # 델타 시간(Delta Ticks)으로 전환하면서 트랙에 붙임
+    last_tick = 0
+    for tick, msg_type, pitch, vel in events:
+        delta = tick - last_tick
+        if delta < 0:
+            delta = 0  # 수학적 역전의 여지 차단
+        new_track.append(mido.Message(msg_type, note=pitch, velocity=vel, time=delta, channel=msg_chan))
+        last_tick = tick
+        
+    # 트랙 종단 마커
+    new_track.append(mido.MetaMessage('end_of_track', time=0))
+    
+    # 새로 빚은 순수 AI 트랙 한 줄을 원본 파일에 조심스레 첨부
+    mid.tracks.append(new_track)
+    mid.save(output_path)
+    logger.info(f"원본 100% 보존 기반 병합 저장 완료: {output_path} (생성된 노트 {len(notes)}개)")
 
 
 # ──────────────────────────────────────────────
@@ -671,63 +734,17 @@ def run_arrangement(
     target:        str,
     genre:         str,
     temperature:   float,
-    pitch_min,
-    pitch_max,
+    pitch_min,     pitch_max,
     output_path:   str,
-    model,
-    vocab:         dict,
-    vocab_r:       dict,
-    device,
-    progress_hook = None,
+    model, vocab, vocab_r, device,
+    progress_hook=None,
+    original_song_path: str = None
 ) -> str:
-    """편곡 추론 실행. 결과 MIDI 경로 반환.
-
-    ⚠️  arrangement.py의 run_in_executor 호출과 인자 순서가 정확히 일치해야 합니다.
-    시그니처 변경 시 반드시 백엔드 엔지니어(arrangement.py)와 협의하세요.
-
-    arrangement.py 호출 예시:
-        result_path = await loop.run_in_executor(
-            None, run_arrangement,
-            str(midi_path),           # 1: song_path
-            target_name,              # 2: target
-            request.genre,            # 3: genre
-            request.temperature,      # 4: temperature
-            request.minNote,          # 5: pitch_min
-            request.maxNote,          # 6: pitch_max
-            str(output_path),         # 7: output_path
-            loaded.model,             # 8: model
-            loaded.vocab,             # 9: vocab
-            loaded.vocab_r,           # 10: vocab_r
-            loaded.device,            # 11: device
-            inference_progress_hook,  # 12: progress_hook
-        )
-
-    Args:
-        song_path:   입력 MIDI 파일 경로
-        target:      INSTRUMENT_GROUPS 키 (예: "violin", "woodwind")
-        genre:       CLASSICAL / JAZZ / POP / ROCK / ELECTRONIC / FOLK / UNKNOWN
-        temperature: 샘플링 온도 (0.1 ~ 2.0)
-        pitch_min:   음역 최솟값 (None이면 악기 기본값)
-        pitch_max:   음역 최댓값 (None이면 악기 기본값)
-        output_path: 결과 MIDI 저장 경로
-        model:       model_registry.py가 주입하는 모델
-        vocab:       model_registry.py가 주입하는 vocab
-        vocab_r:     model_registry.py가 주입하는 vocab_r
-        device:      "cuda" 또는 "cpu" (model_registry.py가 주입)
-
-    Returns:
-        output_path (저장된 MIDI 파일 경로)
-
-    Raises:
-        ValueError:        target 미지원
-        FileNotFoundError: song_path 없음
-        RuntimeError:      생성 노트 없음
-    """
+    """편곡 추론 실행. 결과 MIDI 경로 반환."""
     # 고정 하이퍼파라미터
     window_bars    = 8
     context_bars   = 8
     top_p          = 0.95
-    max_new_tokens = 1024   # noqa: F841 — generate_for_target 내부에서 range(1024)로 사용
     rest_penalty   = 1.5
     fade_bars      = 8
     seed           = 42
@@ -762,18 +779,16 @@ def run_arrangement(
         vocab, vocab_r, source_pm, _device,
         rest_penalty=rest_penalty,
         fade_bars=fade_bars,
-        progress_hook=progress_hook,   # arrangement.py에서 주입된 콜백 포워딩
+        progress_hook=progress_hook,
     )
 
     logger.info(f"디코딩 노트: {len(all_notes)}")
     all_notes = postprocess(all_notes, pitch_min, pitch_max, target_name=target)
     logger.info(f"후처리 후: {len(all_notes)}")
 
-    if not all_notes:
-        raise RuntimeError(
-            f"생성 노트 없음 — temperature를 높이거나 입력 MIDI를 확인하세요. "
-            f"(target={target}, genre={genre})"
-        )
+    if len(all_notes) == 0:
+        raise RuntimeError("No notes generated.")
 
-    save_midi(all_notes, source_pm, output_path, target_prog, target)
+    save_midi(all_notes, source_pm, output_path, target_prog, target, original_song_path)
+
     return output_path
