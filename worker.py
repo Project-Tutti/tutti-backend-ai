@@ -359,6 +359,14 @@ def process_job(
                 cb_url, cb_secret, _payload("processing", pct)
             )
 
+        target_midi_program_raw = job_data.get("targetMidiProgram")
+        target_midi_program = None
+        if target_midi_program_raw is not None:
+            try:
+                target_midi_program = int(target_midi_program_raw)
+            except ValueError:
+                logger.warning(f"[{job_id}] 유효하지 않은 targetMidiProgram 무시: {target_midi_program_raw}")
+
         result_file = run_arrangement(
             song_path=str(mapped_midi_path),
             target=target_name,
@@ -373,6 +381,8 @@ def process_job(
             device=loaded.device,
             progress_hook=progress_hook,
             original_song_path=str(midi_path),
+            actual_instrument_name=job_data.get("targetInstrumentName"),
+            actual_midi_program=target_midi_program,
         )
 
         callback.send_progress(cb_url, cb_secret, _payload("processing", 80))
