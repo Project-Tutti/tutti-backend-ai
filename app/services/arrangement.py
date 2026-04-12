@@ -102,7 +102,9 @@ async def process_arrangement(request: ArrangeRequest, registry):
             loaded.vocab_r,         # vocab_r
             loaded.device,          # device
             inference_progress_hook,# progress_hook
-            str(midi_path)          # 🚨 순수 원본(Unmodified) 파일 (Append 저장 시 사용)
+            str(midi_path),         # 🚨 순수 원본(Unmodified) 파일 (Append 저장 시 사용)
+            request.targetInstrumentName,  # actual_instrument_name (None→기존 target_name 사용)
+            request.targetMidiProgram,     # actual_midi_program (None→기존 target_prog 사용)
         )
 
         await send_callback(cb, secret, {

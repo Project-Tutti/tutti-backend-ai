@@ -644,11 +644,17 @@ def postprocess(notes, pitch_min, pitch_max, target_name=None):
 # ──────────────────────────────────────────────
 # 12. MIDI 저장 (save_midi)
 # ──────────────────────────────────────────────
-def save_midi(notes, source_pm, output_path, target_prog, target_name, original_song_path=None):
+def save_midi(notes, source_pm, output_path, target_prog, target_name,
+              original_song_path=None,
+              actual_instrument_name=None, actual_midi_program=None):
     """
     원본 미디 파일(`original_song_path`)에 AI가 생성한 노트들만 새로운 전용 트랙으로
     덧붙여 저장(Append)합니다. 이렇게 하면 원본 트랙들의 Jitter 발생이나 SysEx 메타데이터
     손실을 100% 방지할 수 있습니다.
+
+    Args:
+        actual_instrument_name: 실제 악기 이름 오버라이드 (예: "Viola"). None이면 target_name 사용.
+        actual_midi_program:    실제 MIDI program 번호 오버라이드 (예: 41). None이면 target_prog 사용.
     """
     if not original_song_path:
         raise ValueError("original_song_path is required for Mido Append strategy")
@@ -659,14 +665,24 @@ def save_midi(notes, source_pm, output_path, target_prog, target_name, original_
     # 엣지 1: 원본이 Type-0일 때 다중 트랙 저장을 위해 형식을 Type-1로 강제 전환
     if mid.type == 0:
         mid.type = 1
+
+    # 트랙 이름: actual_instrument_name이 있으면 우선 사용 (예: "Viola")
+    display_name = actual_instrument_name or target_name
         
     new_track = mido.MidiTrack()
     # 첫 메타 메시지로 트랙 명찰 부여 (악보/DAW 인식용)
-    new_track.append(mido.MetaMessage('track_name', name=f"AI_Generated_{target_name}", time=0))
+    new_track.append(mido.MetaMessage('track_name', name=f"AI_{display_name}", time=0))
     
     # 엣지 2: 드럼 전용 채널 충돌 및 오버플로우 방어
     is_drum = (target_prog == 128)
-    msg_prog = 0 if is_drum else target_prog
+    # MIDI program: 드럼이 아니고 actual_midi_program이 있으면 사용
+    if is_drum:
+        msg_prog = 0
+    else:
+        msg_prog = actual_midi_program if actual_midi_program is not None else target_prog
+    
+    # Mido 예외 방지: program은 무조건 0~127 범위 안에 있어야 함
+    msg_prog = max(0, min(127, msg_prog))
     
     if is_drum:
         msg_chan = 9  # 드럼 채널은 무조건 9 (MIDI 10번 채널)
@@ -738,7 +754,9 @@ def run_arrangement(
     output_path:   str,
     model, vocab, vocab_r, device,
     progress_hook=None,
-    original_song_path: str = None
+    original_song_path: str = None,
+    actual_instrument_name: str = None,
+    actual_midi_program: int = None,
 ) -> str:
     """편곡 추론 실행. 결과 MIDI 경로 반환."""
     # 고정 하이퍼파라미터
@@ -789,6 +807,9 @@ def run_arrangement(
     if len(all_notes) == 0:
         raise RuntimeError("No notes generated.")
 
-    save_midi(all_notes, source_pm, output_path, target_prog, target, original_song_path)
+    save_midi(all_notes, source_pm, output_path, target_prog, target,
+              original_song_path,
+              actual_instrument_name=actual_instrument_name,
+              actual_midi_program=actual_midi_program)
 
     return output_path

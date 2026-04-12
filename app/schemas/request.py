@@ -25,6 +25,9 @@ class ArrangeRequest(BaseModel):
     modelType: Optional[str] = None            # 모델 선택 (None이면 기본 모델)
     genre: GenreType = Field(default="CLASSICAL")    # 장르 (유효값만 허용)
     temperature: float = Field(default=1.0, ge=0.1, le=2.0)  # 다양성
+    # ── MIDI 메타데이터 오버라이드 (하위 호환 Optional) ──
+    targetInstrumentName: Optional[str] = None   # 실제 악기 이름 (예: "Viola")
+    targetMidiProgram: Optional[int] = None      # 실제 MIDI program 번호 (예: 41)
     callbackUrl: HttpUrl
     callbackSecret: str
 
