@@ -1,8 +1,9 @@
 # ═══════════════════════════════════════════════════════════
-# Tutti MLflow Server — 실험 추적 서버
+# Tutti MLflow + Optuna Dashboard Server
 # ═══════════════════════════════════════════════════════════
 # 실행: docker compose -f mlflow/docker-compose.mlflow.yml up -d
-# 접속: Cloudflare Tunnel → mlflow.yourdomain.com
+# MLflow:  Cloudflare Tunnel → mlflow.tutti.asia
+# Optuna:  Cloudflare Tunnel → optuna.tutti.asia
 # ═══════════════════════════════════════════════════════════
 
 services:
@@ -20,5 +21,20 @@ services:
       - "127.0.0.1:5000:5000"   # 로컬만 바인딩 (Cloudflare Tunnel이 외부 노출)
     restart: unless-stopped
 
+  optuna-dashboard:
+    image: python:3.12-slim
+    command: >
+      sh -c "pip install -q optuna-dashboard &&
+             optuna-dashboard sqlite:////data/optuna_studies.db
+             --host 0.0.0.0 --port 8080"
+    volumes:
+      # GPU 서버의 tutti-backend-ai 디렉토리 → 컨테이너 /data
+      # optuna_studies.db 파일이 여기에 생성됨
+      - /root/tutti-backend-ai:/data:ro
+    ports:
+      - "127.0.0.1:8080:8080"   # 로컬만 바인딩 (Cloudflare Tunnel이 외부 노출)
+    restart: unless-stopped
+
 volumes:
   mlflow-data:
+
