@@ -1,0 +1,11 @@
+# AI 개발자 전용 영역 → @sonicwarp가 오너, PR 시 자동 리뷰어 배정
+/ai_core/                     @sonicwarp
+
+# 인프라 전용 영역 → @eddy81848이 오너
+/worker.py                    @eddy81848
+/app/                         @eddy81848
+/docker-compose.yml           @eddy81848
+/.github/                     @eddy81848
+
+# 양쪽 모두 리뷰 필수
+/contracts/                   @eddy81848 @sonicwarp

@@ -64,6 +64,8 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 
 # 애플리케이션 소스 복사
 COPY app/ ./app/
+COPY ai_core/ ./ai_core/
+COPY contracts/ ./contracts/
 COPY worker.py ./worker.py
 
 # Environment defaults
@@ -75,4 +77,4 @@ ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
 EXPOSE 8000
 
-CMD ["python3.11", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python3.11", "worker.py"]
