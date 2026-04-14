@@ -146,3 +146,50 @@ class TestFacade:
     def test_facade_exports_save_midi(self):
         from app.services.inference import save_midi
         assert callable(save_midi)
+
+
+# ──────────────────────────────────────────────
+# 6. metrics 모듈 테스트
+# ──────────────────────────────────────────────
+class TestMetrics:
+    def test_compute_basic_quality_metrics_with_notes(self, tmp_path):
+        import mido
+        from ai_core.metrics import compute_basic_quality_metrics
+
+        # 테스트용 MIDI 파일 생성
+        mid = mido.MidiFile()
+        track = mido.MidiTrack()
+        mid.tracks.append(track)
+        track.append(mido.MetaMessage("set_tempo", tempo=500000, time=0))
+        # C4(60), E4(64), G4(67) 각각 480tick 길이
+        for pitch in [60, 64, 67]:
+            track.append(mido.Message("note_on", note=pitch, velocity=80, time=0))
+            track.append(mido.Message("note_off", note=pitch, velocity=0, time=480))
+
+        midi_path = str(tmp_path / "test.mid")
+        mid.save(midi_path)
+
+        result = compute_basic_quality_metrics(midi_path)
+        assert result["note_count"] == 3
+        assert result["pitch_min"] == 60
+        assert result["pitch_max"] == 67
+        assert result["pitch_range"] == 7
+
+    def test_compute_basic_quality_metrics_empty_file(self, tmp_path):
+        import mido
+        from ai_core.metrics import compute_basic_quality_metrics
+
+        # 노트 없는 MIDI
+        mid = mido.MidiFile()
+        mid.tracks.append(mido.MidiTrack())
+        midi_path = str(tmp_path / "empty.mid")
+        mid.save(midi_path)
+
+        result = compute_basic_quality_metrics(midi_path)
+        assert result.get("note_count") == 0
+
+    def test_compute_basic_quality_metrics_invalid_path(self):
+        from ai_core.metrics import compute_basic_quality_metrics
+
+        result = compute_basic_quality_metrics("/nonexistent/file.mid")
+        assert result == {}

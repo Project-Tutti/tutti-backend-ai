@@ -452,12 +452,27 @@ def process_job(
 
         callback.send_progress(cb_url, cb_secret, _payload("processing", 80))
 
+        # ── Step 3.5: 품질 메트릭 수집 ────────────────────────
+        quality = {}
+        try:
+            from ai_core.metrics import compute_basic_quality_metrics
+            quality = compute_basic_quality_metrics(str(result_file))
+            if quality:
+                logger.info(
+                    f"[{job_id}] 품질 메트릭: "
+                    f"노트 {quality.get('note_count')}개, "
+                    f"음역 {quality.get('pitch_range')}, "
+                    f"밀도 {quality.get('density_per_sec')}/s"
+                )
+        except Exception as e:
+            logger.warning(f"[{job_id}] 품질 메트릭 수집 실패 (비치명적): {e}")
+
         # ── Step 4: 완료 콜백 (100%) ─────────────────────────
         logger.info(f"[{job_id}] Step 4/4: 결과 MIDI 전송")
         success = callback.send_result(
             cb_url,
             cb_secret,
-            _payload("complete", 100),
+            _payload("complete", 100, **({"qualityMetrics": quality} if quality else {})),
             file_path=Path(result_file),
         )
 
