@@ -89,7 +89,62 @@ logger = logging.getLogger("worker")
 
 
 # ══════════════════════════════════════════════════════════════
-# HealthCheckServer — 컨테이너 헬스체크용 경량 HTTP 서버
+# Prometheus 메트릭 (외부 의존성 없이 텍스트 포맷 직접 생성)
+# ══════════════════════════════════════════════════════════════
+class WorkerMetrics:
+    """스레드 안전한 Prometheus 메트릭 카운터."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.jobs_total = 0          # 처리된 총 작업 수
+        self.jobs_success = 0        # 성공한 작업 수
+        self.jobs_failed = 0         # 실패한 작업 수
+        self.inference_seconds = 0.0 # 누적 추론 시간 (초)
+        self.last_job_timestamp = 0  # 마지막 작업 완료 시간
+
+    def record_success(self, duration_sec: float):
+        with self._lock:
+            self.jobs_total += 1
+            self.jobs_success += 1
+            self.inference_seconds += duration_sec
+            self.last_job_timestamp = time.time()
+
+    def record_failure(self):
+        with self._lock:
+            self.jobs_total += 1
+            self.jobs_failed += 1
+            self.last_job_timestamp = time.time()
+
+    def to_prometheus(self) -> str:
+        with self._lock:
+            lines = [
+                "# HELP ai_worker_jobs_total Total arrangement jobs processed",
+                "# TYPE ai_worker_jobs_total counter",
+                f"ai_worker_jobs_total {self.jobs_total}",
+                "# HELP ai_worker_jobs_success_total Successfully completed jobs",
+                "# TYPE ai_worker_jobs_success_total counter",
+                f"ai_worker_jobs_success_total {self.jobs_success}",
+                "# HELP ai_worker_jobs_failed_total Failed jobs",
+                "# TYPE ai_worker_jobs_failed_total counter",
+                f"ai_worker_jobs_failed_total {self.jobs_failed}",
+                "# HELP ai_worker_inference_seconds_total Cumulative inference time in seconds",
+                "# TYPE ai_worker_inference_seconds_total counter",
+                f"ai_worker_inference_seconds_total {self.inference_seconds:.2f}",
+                "# HELP ai_worker_model_loaded Whether the model is loaded (1=yes, 0=no)",
+                "# TYPE ai_worker_model_loaded gauge",
+                f"ai_worker_model_loaded {1 if _model_loaded else 0}",
+                "# HELP ai_worker_last_job_timestamp Unix timestamp of last job completion",
+                "# TYPE ai_worker_last_job_timestamp gauge",
+                f"ai_worker_last_job_timestamp {self.last_job_timestamp:.0f}",
+            ]
+            return "\n".join(lines) + "\n"
+
+
+metrics = WorkerMetrics()
+
+
+# ══════════════════════════════════════════════════════════════
+# HealthCheckServer — 컨테이너 헬스체크 + Prometheus 메트릭
 # ══════════════════════════════════════════════════════════════
 HEALTH_PORT = 8000
 
@@ -98,7 +153,7 @@ _model_loaded = False
 
 
 class _HealthHandler(BaseHTTPRequestHandler):
-    """GET /health 에만 응답하는 최소 핸들러."""
+    """GET /health, GET /metrics 에 응답하는 경량 핸들러."""
 
     def do_GET(self):
         if self.path == "/health":
@@ -111,6 +166,12 @@ class _HealthHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(body.encode())
+        elif self.path == "/metrics":
+            body = metrics.to_prometheus()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(body.encode())
         else:
             self.send_response(404)
             self.end_headers()
@@ -121,11 +182,11 @@ class _HealthHandler(BaseHTTPRequestHandler):
 
 
 def _start_health_server():
-    """데몬 스레드에서 헬스체크 HTTP 서버를 시작합니다."""
+    """데몬 스레드에서 헬스체크 + 메트릭 HTTP 서버를 시작합니다."""
     server = HTTPServer(("0.0.0.0", HEALTH_PORT), _HealthHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    logger.info(f"헬스체크 서버 시작: http://0.0.0.0:{HEALTH_PORT}/health")
+    logger.info(f"헬스체크/메트릭 서버 시작: http://0.0.0.0:{HEALTH_PORT}/health, /metrics")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -367,6 +428,8 @@ def process_job(
             except ValueError:
                 logger.warning(f"[{job_id}] 유효하지 않은 targetMidiProgram 무시: {target_midi_program_raw}")
 
+        infer_start = time.time()
+
         result_file = run_arrangement(
             song_path=str(mapped_midi_path),
             target=target_name,
@@ -385,6 +448,8 @@ def process_job(
             actual_midi_program=target_midi_program,
         )
 
+        infer_duration = time.time() - infer_start
+
         callback.send_progress(cb_url, cb_secret, _payload("processing", 80))
 
         # ── Step 4: 완료 콜백 (100%) ─────────────────────────
@@ -397,12 +462,14 @@ def process_job(
         )
 
         if success:
-            logger.info(f"[{job_id}] ✅ 편곡 완료 — 콜백 전송 성공")
+            logger.info(f"[{job_id}] ✅ 편곡 완료 — 콜백 전송 성공 ({infer_duration:.1f}s)")
         else:
             logger.error(
                 f"[{job_id}] ⚠️ 편곡은 완료했으나 콜백 전송 실패 — "
                 f"백엔드 GC가 처리합니다"
             )
+
+        metrics.record_success(infer_duration)
 
     except Exception as e:
         logger.error(f"[{job_id}] ❌ 편곡 실패: {e}", exc_info=True)
@@ -411,6 +478,7 @@ def process_job(
             cb_secret,
             _payload("failed", 0, errorMessage=str(e)),
         )
+        metrics.record_failure()
 
     finally:
         # 임시 파일 정리
