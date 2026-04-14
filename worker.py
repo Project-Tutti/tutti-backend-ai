@@ -455,14 +455,28 @@ def process_job(
         # ── Step 3.5: 품질 메트릭 수집 ────────────────────────
         quality = {}
         try:
-            from ai_core.metrics import compute_basic_quality_metrics
+            from ai_core.metrics import compute_basic_quality_metrics, compute_musical_quality
+
+            # Stage 1: 기본 통계 (~1ms)
             quality = compute_basic_quality_metrics(str(result_file))
+
+            # Stage 2: 음악적 평가 — 원본과 비교 (~50ms)
+            musical = compute_musical_quality(
+                source_path=str(midi_path),
+                generated_path=str(result_file),
+                target_program=target_midi_program,
+            )
+            if musical:
+                quality.update(musical)
+
             if quality:
                 logger.info(
                     f"[{job_id}] 품질 메트릭: "
                     f"노트 {quality.get('note_count')}개, "
                     f"음역 {quality.get('pitch_range')}, "
-                    f"밀도 {quality.get('density_per_sec')}/s"
+                    f"밀도 {quality.get('density_per_sec')}/s, "
+                    f"코드일치 {quality.get('chord_accuracy', '-')}, "
+                    f"불협화 {quality.get('dissonance_rate', '-')}"
                 )
         except Exception as e:
             logger.warning(f"[{job_id}] 품질 메트릭 수집 실패 (비치명적): {e}")
