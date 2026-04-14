@@ -1,0 +1,24 @@
+# ═══════════════════════════════════════════════════════════
+# Tutti MLflow Server — 실험 추적 서버
+# ═══════════════════════════════════════════════════════════
+# 실행: docker compose -f mlflow/docker-compose.mlflow.yml up -d
+# 접속: Cloudflare Tunnel → mlflow.yourdomain.com
+# ═══════════════════════════════════════════════════════════
+
+services:
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.19.0
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri sqlite:///mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+    volumes:
+      - mlflow-data:/mlflow
+    ports:
+      - "127.0.0.1:5000:5000"   # 로컬만 바인딩 (Cloudflare Tunnel이 외부 노출)
+    restart: unless-stopped
+
+volumes:
+  mlflow-data:

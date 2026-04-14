@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════
-# Stage 1: Builder — pip install 전용 (CUDA 빌드 도구 포함)
+# Stage 1: Builder — uv로 의존성 설치 (CUDA 빌드 도구 포함)
 # ═══════════════════════════════════════════════════════════
 FROM nvidia/cuda:12.1.0-devel-ubuntu22.04 AS builder
 
@@ -17,16 +17,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11 \
     python3.11-venv \
     python3.11-dev \
-    python3-pip \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# pip를 Python 3.11로 연결
-RUN python3.11 -m ensurepip && \
-    python3.11 -m pip install --upgrade pip
+# uv 설치
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-COPY requirements.txt .
-RUN python3.11 -m pip install --no-cache-dir -r requirements.txt
+# 의존성 캐시: 소스 없이 pyproject.toml만 먼저 복사
+COPY pyproject.toml ./
+# uv.lock이 있으면 복사 (없으면 무시)
+COPY uv.loc[k] ./
+
+# venv 생성 + 의존성 설치 (소스 변경에 영향받지 않는 Docker 캐시 레이어)
+RUN uv venv --python 3.11 /build/.venv \
+    && uv sync --no-dev --extra gpu --no-install-project
 
 # ═══════════════════════════════════════════════════════════
 # Stage 2: Runtime — 최소 CUDA 런타임 이미지
@@ -44,10 +48,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && add-apt-repository ppa:deadsnakes/ppa \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-    build-essential \
     python3.11 \
     python3.11-venv \
     python3.11-dev \
+    build-essential \
     curl \
     libsndfile1 \
     fluid-soundfont-gm \
@@ -56,16 +60,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
     && ln -sf /usr/bin/python3.11 /usr/bin/python
 
-# Builder에서 설치된 Python 패키지만 복사
-COPY --from=builder /usr/local/lib/python3.11/dist-packages /usr/local/lib/python3.11/dist-packages
-COPY --from=builder /usr/lib/python3/dist-packages /usr/lib/python3/dist-packages
-COPY --from=builder /usr/lib/python3.11 /usr/lib/python3.11
-COPY --from=builder /usr/local/bin /usr/local/bin
+# Builder에서 설치된 venv 복사
+COPY --from=builder /build/.venv /app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
 
 # 애플리케이션 소스 복사
-COPY app/ ./app/
 COPY ai_core/ ./ai_core/
 COPY contracts/ ./contracts/
+COPY app/ ./app/
 COPY worker.py ./worker.py
 
 # Environment defaults

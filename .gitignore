@@ -209,3 +209,11 @@ __marimo__/
 /local_docs
 /_legacy
 .DS_Store
+
+# DVC
+/data/
+.dvc/tmp
+.dvc/cache
+
+# uv
+.python-version

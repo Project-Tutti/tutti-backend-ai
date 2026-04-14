@@ -10,9 +10,12 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - "ai_core/**"
+      - "contracts/**"
       - "app/**"
+      - "tests/**"
       - "Dockerfile"
-      - "requirements.txt"
+      - "pyproject.toml"
   # 수동 배포 지원
   workflow_dispatch:
 
@@ -22,10 +25,36 @@ env:
 
 jobs:
   # ================================================================
-  # Job 1: Build & Push — Docker 이미지 빌드 후 Artifact Registry 푸시
+  # Job 1: Test — AI Core 단위 테스트 게이트
+  # ================================================================
+  test-ai-core:
+    name: 🧪 Test AI Core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen --group test --no-install-project
+
+      - name: Run AI Core tests
+        run: uv run pytest tests/test_ai_core.py tests/test_contracts.py -v --tb=short
+
+      - name: Verify contracts
+        run: |
+          uv run python -c "
+          from contracts.interfaces import ArrangementEngine
+          from ai_core.arrangement import run_arrangement, resolve_target
+          print('✅ Contract verification passed')
+          "
+
+  # ================================================================
+  # Job 2: Build & Push — Docker 이미지 빌드 후 Artifact Registry 푸시
   # ================================================================
   build-and-push:
     name: 🐳 Build & Push
+    needs: test-ai-core
     # PR을 포함하여 실행하되, PR 환경에서는 이미지를 push하지 않고 빌드 검증만 수행
     runs-on: ubuntu-latest
     permissions:
@@ -71,7 +100,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ================================================================
-  # Job 2: Deploy — 온프레미스 서버 배포 및 환경 변수 동기화
+  # Job 3: Deploy — 온프레미스 서버 배포 및 환경 변수 동기화
   # ================================================================
   deploy-onprem:
     name: 🚀 Deploy to On-Premise
@@ -94,19 +123,11 @@ jobs:
         run: |
           cd ~/tutti-backend-ai
 
-          # 💡 [참고] 온프레미스 서버 디렉토리 최적화 (Sparse-Checkout) 가이드
-          # 서버에 모든 소스코드가 안 보이고 특정 폴더들만 남겨져 있다면 sparse-checkout 적용 상태입니다.
-          # 1) 만약 배포 시 필요한 폴더가 추가된다면 서버 터미널에서 다음 1회 실행:
-          #    $ git sparse-checkout add 추가할폴더명
-          # 2) 숨김 처리를 해제하고 전체 소스코드를 복구하고 싶다면:
-          #    $ git sparse-checkout disable
-
           echo "📥 1. Syncing latest code (Force clean)..."
           git fetch origin main
           git reset --hard origin/main
 
           echo "📂 1.5. Syncing registry.json to models/ directory..."
-          # docker-compose가 /models로 마운트하므로 루트의 registry.json을 models/ 안으로 복사
           cp -f registry.json models/registry.json
 
           echo "🔐 2. Updating .env from GitHub Secrets..."

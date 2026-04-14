@@ -1,0 +1,5 @@
+[core]
+    remote = local_store
+    autostage = true
+['remote "local_store"']
+    url = ~/dvc_store

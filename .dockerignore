@@ -32,5 +32,12 @@ __pycache__/
 docker-compose.yml
 nginx/
 
+# 레거시 / MLflow / 테스트 (런타임 불필요)
+_legacy/
+mlflow/
+tests/
+.dvc/
+data/
+
 # macOS
 .DS_Store

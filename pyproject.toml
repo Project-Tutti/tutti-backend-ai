@@ -1,0 +1,36 @@
+[project]
+name = "tutti-backend-ai"
+version = "3.1.0"
+description = "Tutti AI 편곡 서버 — Redis Streams 워커 기반"
+requires-python = ">=3.11"
+
+dependencies = [
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.2.1",
+    "mido>=1.3.2",
+    "pretty_midi>=0.2.10",
+    "tqdm>=4.66.0",
+    "transformers>=4.40.0",
+    "safetensors>=0.4.0",
+    "redis>=5.0.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+gpu = ["torch>=2.3.0,<2.7.0"]
+test = ["pytest>=8.0", "pytest-mock>=3.14"]
+mlflow = ["mlflow>=2.19.0"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
