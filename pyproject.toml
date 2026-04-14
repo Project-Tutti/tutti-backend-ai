@@ -19,7 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 gpu = ["torch>=2.3.0,<2.7.0"]
 test = ["pytest>=8.0", "pytest-mock>=3.14"]
-mlflow = ["mlflow>=2.19.0", "optuna>=4.0.0", "optuna-dashboard>=0.16.0", "numpy>=1.26.0"]
+mlflow = ["mlflow>=2.19.0", "optuna>=4.0.0", "optuna-dashboard>=0.16.0", "numpy>=1.26.0,<3.0"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu124" }

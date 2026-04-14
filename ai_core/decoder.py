@@ -7,19 +7,22 @@ import bisect
 
 
 def decode_tokens(tokens, source_pm, target_prog,
-                  bar_offset, win_start, win_end, vocab_r):
+                  bar_offset, win_start, win_end, vocab_r,
+                  max_bar=None):
     res         = source_pm.resolution
     ts_changes  = sorted(source_pm.time_signature_changes, key=lambda x: x.time)
     ts_times    = [t.time for t in ts_changes]
     tempo_times, tempos = source_pm.get_tempo_changes()
 
+    # 동적 범위: max_bar가 주어지면 필요한 만큼만 계산 (+ 여유분)
+    bar_limit = (max_bar + 50) if max_bar is not None else 2000
     bar_tick_map = {}
     acc = 0
-    for b in range(2000):
+    for b in range(bar_limit):
         bar_tick_map[b] = acc
         bt  = source_pm.tick_to_time(acc)
         idx = max(0, bisect.bisect_right(ts_times, bt) - 1)
-        bpb = ts_changes[idx].numerator if idx < len(ts_changes) else 4
+        bpb = ts_changes[idx].numerator if ts_changes and idx < len(ts_changes) else 4
         acc += res * bpb
 
     notes_out = []
@@ -42,10 +45,15 @@ def decode_tokens(tokens, source_pm, target_prog,
                     cur_time_tok is not None and
                     win_start <= bar_idx <= win_end):
 
-                b_tick    = bar_tick_map.get(bar_idx, 0)
+                b_tick = bar_tick_map.get(bar_idx)
+                if b_tick is None:
+                    # bar_limit을 넘어간 모델 길이 폭주의 경우, 마지막 바 기준으로 대략 누적
+                    last_b_tick = bar_tick_map.get(bar_limit - 1, 0) if bar_limit > 0 else 0
+                    b_tick = last_b_tick + res * 4 * max(0, bar_idx - (bar_limit - 1))
+
                 b_time    = source_pm.tick_to_time(b_tick)
                 ts_idx    = max(0, bisect.bisect_right(ts_times, b_time) - 1)
-                bpb       = ts_changes[ts_idx].numerator if ts_idx < len(ts_changes) else 4
+                bpb       = ts_changes[ts_idx].numerator if ts_changes and ts_idx < len(ts_changes) else 4
                 bar_ticks = res * bpb
                 abs_tick  = b_tick + cur_time_tok * bar_ticks // 96
                 start_sec = source_pm.tick_to_time(abs_tick)

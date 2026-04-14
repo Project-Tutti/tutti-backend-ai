@@ -24,7 +24,7 @@ tutti-backend-ai/
 │   └── tune.py           # Optuna 하이퍼파라미터 자동 튜닝
 │
 ├── contracts/            ← ⚠️ 양쪽 합의 필요 (시그니처 변경 시)
-│   └── interfaces.py     # Protocol 정의 (ArrangementEngine 등)
+│   └── interfaces.py     # Protocol 정의 (ArrangementRunner 등)
 │
 ├── app/                  ← 🔒 인프라 영역 (수정 불필요)
 │   └── services/
@@ -109,7 +109,7 @@ def sample_next_token(logits, temperature=1.0, top_k=50):
 
 ```python
 # contracts/interfaces.py
-class ArrangementEngine(Protocol):
+class ArrangementRunner(Protocol):
     def run_arrangement(
         self,
         ...,

@@ -96,11 +96,17 @@ class WorkerMetrics:
 
     def __init__(self):
         self._lock = threading.Lock()
-        self.jobs_total = 0          # 처리된 총 작업 수
+        self.jobs_total = 0          # 처리한 전체 작업 (실패 포함)
         self.jobs_success = 0        # 성공한 작업 수
         self.jobs_failed = 0         # 실패한 작업 수
         self.inference_seconds = 0.0 # 누적 추론 시간 (초)
         self.last_job_timestamp = 0  # 마지막 작업 완료 시간
+
+        # Histogram for Prometheus (P99 레이턴시 측정용)
+        self.duration_buckets = [1.0, 5.0, 10.0, 30.0, 60.0, 120.0, float('inf')]
+        self.duration_counts = {b: 0 for b in self.duration_buckets}
+        self.duration_sum = 0.0
+        self.duration_count = 0
 
     def record_success(self, duration_sec: float):
         with self._lock:
@@ -108,6 +114,13 @@ class WorkerMetrics:
             self.jobs_success += 1
             self.inference_seconds += duration_sec
             self.last_job_timestamp = time.time()
+
+            # 히스토그램 기록 (누적 방식)
+            self.duration_sum += duration_sec
+            self.duration_count += 1
+            for b in self.duration_buckets:
+                if duration_sec <= b:
+                    self.duration_counts[b] += 1
 
     def record_failure(self):
         with self._lock:
@@ -117,6 +130,7 @@ class WorkerMetrics:
 
     def to_prometheus(self) -> str:
         with self._lock:
+            import math
             lines = [
                 "# HELP ai_worker_jobs_total Total arrangement jobs processed",
                 "# TYPE ai_worker_jobs_total counter",
@@ -129,14 +143,24 @@ class WorkerMetrics:
                 f"ai_worker_jobs_failed_total {self.jobs_failed}",
                 "# HELP ai_worker_inference_seconds_total Cumulative inference time in seconds",
                 "# TYPE ai_worker_inference_seconds_total counter",
-                f"ai_worker_inference_seconds_total {self.inference_seconds:.2f}",
+                f"ai_worker_inference_seconds_total {self.inference_seconds:.6f}",
                 "# HELP ai_worker_model_loaded Whether the model is loaded (1=yes, 0=no)",
                 "# TYPE ai_worker_model_loaded gauge",
                 f"ai_worker_model_loaded {1 if _model_loaded else 0}",
                 "# HELP ai_worker_last_job_timestamp Unix timestamp of last job completion",
                 "# TYPE ai_worker_last_job_timestamp gauge",
                 f"ai_worker_last_job_timestamp {self.last_job_timestamp:.0f}",
+                "# HELP ai_worker_job_duration_seconds Inference duration in seconds",
+                "# TYPE ai_worker_job_duration_seconds histogram",
             ]
+            
+            for b in self.duration_buckets:
+                le_str = "+Inf" if math.isinf(b) else f"{b:.1f}"
+                lines.append(f'ai_worker_job_duration_seconds_bucket{{le="{le_str}"}} {self.duration_counts[b]}')
+            
+            lines.append(f"ai_worker_job_duration_seconds_sum {self.duration_sum:.6f}")
+            lines.append(f"ai_worker_job_duration_seconds_count {self.duration_count}")
+
             return "\n".join(lines) + "\n"
 
 
@@ -177,8 +201,11 @@ class _HealthHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def log_message(self, format, *args):
-        """헬스체크 로그 억제 (30초마다 찍히면 노이즈)."""
-        pass
+        """정상 헬스체크 로그만 억제 (에러 응답은 기록)."""
+        # args[1]은 HTTP 상태 코드 문자열 (예: "200", "404")
+        if args and len(args) >= 2 and str(args[1]).startswith("2"):
+            return  # 2xx 성공 응답만 억제
+        super().log_message(format, *args)
 
 
 def _start_health_server():
@@ -329,11 +356,12 @@ def _download_midi_sync(url: str) -> Path:
 
     logger.info(f"MIDI 다운로드: {url}")
     try:
-        resp = requests.get(url, timeout=60, stream=True)
+        resp = requests.get(url, timeout=(10, 30), stream=True)
         resp.raise_for_status()
         with open(file_path, "wb") as f:
             for chunk in resp.iter_content(chunk_size=8192):
-                f.write(chunk)
+                if chunk:
+                    f.write(chunk)
         logger.info(
             f"MIDI 다운로드 완료: {file_path} ({file_path.stat().st_size:,} bytes)"
         )
@@ -455,28 +483,17 @@ def process_job(
         # ── Step 3.5: 품질 메트릭 수집 ────────────────────────
         quality = {}
         try:
-            from ai_core.metrics import compute_basic_quality_metrics, compute_musical_quality
-
-            # Stage 1: 기본 통계 (~1ms)
+            from ai_core.metrics import compute_basic_quality_metrics
+            
+            # Stage 1: 기본 통계 (~1ms) (Stage 2 화성학 지표는 워커에서 제외)
             quality = compute_basic_quality_metrics(str(result_file))
-
-            # Stage 2: 음악적 평가 — 원본과 비교 (~50ms)
-            musical = compute_musical_quality(
-                source_path=str(midi_path),
-                generated_path=str(result_file),
-                target_program=target_midi_program,
-            )
-            if musical:
-                quality.update(musical)
-
+            
             if quality:
                 logger.info(
                     f"[{job_id}] 품질 메트릭: "
                     f"노트 {quality.get('note_count')}개, "
                     f"음역 {quality.get('pitch_range')}, "
-                    f"밀도 {quality.get('density_per_sec')}/s, "
-                    f"코드일치 {quality.get('chord_accuracy', '-')}, "
-                    f"불협화 {quality.get('dissonance_rate', '-')}"
+                    f"밀도 {quality.get('density_per_sec')}/s"
                 )
         except Exception as e:
             logger.warning(f"[{job_id}] 품질 메트릭 수집 실패 (비치명적): {e}")
@@ -791,6 +808,8 @@ def main():
     logger.info("🎵 메인 루프 시작 — 새 작업을 기다리는 중...")
     last_pending_check = time.time()
 
+    consecutive_failures = 0
+
     while running:
         # 주기적 크래시 복구 점검 (1분마다 실행)
         if time.time() - last_pending_check > 60:
@@ -807,9 +826,13 @@ def main():
         result = consumer.fetch_job()
 
         if result is None:
-            time.sleep(POLL_INTERVAL_SEC)
+            consecutive_failures += 1
+            # 지수 백오프: 연속 실패 시 대기 시간 점진적 증가 (최대 5분)
+            sleep_time = min(POLL_INTERVAL_SEC * (2 ** min(consecutive_failures - 1, 5)), 300)
+            time.sleep(sleep_time)
             continue
 
+        consecutive_failures = 0  # 성공 시 리셋
         msg_id, fields = result
         processing = True
         _handle_message(msg_id, fields, registry, callback_client, consumer)

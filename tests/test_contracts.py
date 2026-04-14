@@ -4,10 +4,18 @@ ai_core의 public API가 contracts에 정의된 Protocol을 준수하는지 확�
 """
 import sys
 import os
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+try:
+    import torch  # noqa: F401
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
 
+
+@pytest.mark.skipif(not HAS_TORCH, reason="torch not installed")
 class TestContracts:
     """Protocol 시그니처 호환성 테스트.
 

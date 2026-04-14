@@ -104,3 +104,4 @@ def save_midi(notes, source_pm, output_path, target_prog, target_name,
     mid.tracks.append(new_track)
     mid.save(output_path)
     logger.info(f"원본 100% 보존 기반 병합 저장 완료: {output_path} (생성된 노트 {len(notes)}개)")
+    return output_path

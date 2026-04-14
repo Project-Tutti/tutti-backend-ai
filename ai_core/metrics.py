@@ -66,32 +66,48 @@ def compute_basic_quality_metrics(midi_path: str) -> dict:
 
         파일을 읽을 수 없거나 노트가 없으면 빈 dict 반환.
     """
+    default_metrics = {
+        "note_count": 0,
+        "pitch_min": 0,
+        "pitch_max": 0,
+        "pitch_range": 0,
+        "pitch_mean": 0.0,
+        "pitch_std": 0.0,
+        "avg_velocity": 0.0,
+        "avg_duration_sec": 0.0,
+        "total_duration_sec": 0.0,
+        "density_per_sec": 0.0,
+    }
+
     try:
         mid = mido.MidiFile(midi_path)
     except Exception as e:
         logger.warning(f"품질 메트릭 계산 실패 (MIDI 읽기 오류): {e}")
-        return {}
+        return default_metrics
+
+    # 전체 트랙에서 템포 이벤트를 시간순으로 수집 (동적 템포 대응)
+    tempo_map = _build_tempo_map(mid)
 
     notes = []  # (pitch, velocity, start_sec, end_sec)
     for track in mid.tracks:
-        abs_time = 0
+        abs_tick = 0
         pending = {}
 
         for msg in track:
-            abs_time += msg.time
+            abs_tick += msg.time
 
             if msg.type == "note_on" and msg.velocity > 0:
-                pending[msg.note] = (msg.velocity, abs_time)
+                pending[msg.note] = (msg.velocity, abs_tick)
             elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
                 if msg.note in pending:
                     vel, start_tick = pending.pop(msg.note)
-                    start_sec = mido.tick2second(start_tick, mid.ticks_per_beat, _get_tempo(mid))
-                    end_sec = mido.tick2second(abs_time, mid.ticks_per_beat, _get_tempo(mid))
+                    start_sec = _tick_to_second(start_tick, mid.ticks_per_beat, tempo_map)
+                    end_sec = _tick_to_second(abs_tick, mid.ticks_per_beat, tempo_map)
                     notes.append((msg.note, vel, start_sec, end_sec))
 
     if not notes:
         logger.warning(f"품질 메트릭: 노트 0개 — {midi_path}")
-        return {"note_count": 0}
+        return default_metrics
 
     pitches = [n[0] for n in notes]
     velocities = [n[1] for n in notes]
@@ -139,19 +155,26 @@ def compute_musical_quality(source_path: str, generated_path: str,
     Returns:
         dict with 4 metrics, or empty dict on failure.
     """
+    default_musical_metrics = {
+        "chord_accuracy": 0.0,
+        "pch_similarity": 0.0,
+        "doa": 0.0,
+        "dissonance_rate": 0.0,
+    }
+
     try:
         import numpy as np
         import pretty_midi
     except ImportError as e:
         logger.warning(f"음악적 평가 건너뜀 (의존성 없음): {e}")
-        return {}
+        return default_musical_metrics
 
     try:
         source_pm = pretty_midi.PrettyMIDI(source_path)
         generated_pm = pretty_midi.PrettyMIDI(generated_path)
     except Exception as e:
         logger.warning(f"음악적 평가 실패 (MIDI 읽기 오류): {e}")
-        return {}
+        return default_musical_metrics
 
     # 타겟 프로그램 자동 감지
     if target_program is not None:
@@ -165,13 +188,13 @@ def compute_musical_quality(source_path: str, generated_path: str,
 
     chord_acc = _chord_accuracy(source_pm, generated_pm, target_programs, resolution, np)
     pch_sim = _pch_similarity(source_pm, generated_pm, target_programs, np)
-    doa = round(1.0 - pch_sim, 4)
+    doa = _degree_of_arrangement(generated_pm, target_programs, np)
     dissonance = _dissonance_rate(source_pm, generated_pm, target_programs, resolution, np)
 
     return {
         "chord_accuracy": round(chord_acc, 4),
         "pch_similarity": round(pch_sim, 4),
-        "doa": doa,
+        "doa": round(doa, 4),
         "dissonance_rate": round(dissonance, 4),
     }
 
@@ -179,12 +202,57 @@ def compute_musical_quality(source_path: str, generated_path: str,
 # ──────────────────────────────────────────────
 # 내부 함수들
 # ──────────────────────────────────────────────
-def _get_tempo(mid: mido.MidiFile) -> int:
+def _build_tempo_map(mid: mido.MidiFile) -> list:
+    """MIDI 파일에서 (tick, tempo) 리스트를 시간순으로 구축.
+
+    템포 변화가 있는 곡에서 정확한 tick→second 변환을 위해
+    모든 set_tempo 이벤트를 추적합니다.
+    """
+    tempo_events = []
     for track in mid.tracks:
+        abs_tick = 0
         for msg in track:
+            abs_tick += msg.time
             if msg.type == "set_tempo":
-                return msg.tempo
-    return 500000
+                tempo_events.append((abs_tick, msg.tempo))
+
+    # tick 기준 정렬
+    tempo_events.sort(key=lambda x: x[0])
+
+    if not tempo_events:
+        return [(0, 500000)]  # 기본 120 BPM
+
+    # tick 0에 이벤트가 없으면 첫 번째 템포를 tick 0부터 적용
+    if tempo_events[0][0] != 0:
+        tempo_events.insert(0, (0, tempo_events[0][1]))
+
+    return tempo_events
+
+
+def _tick_to_second(tick: int, ticks_per_beat: int, tempo_map: list) -> float:
+    """템포 변화를 고려하여 tick을 초로 변환합니다.
+
+    각 템포 구간별로 경과 시간을 누적하여 정확한 시간을 계산합니다.
+    단일 템포만 사용하던 이전 방식의 타이밍 왜곡 문제를 해결합니다.
+    """
+    elapsed_sec = 0.0
+    prev_tick = 0
+    prev_tempo = tempo_map[0][1]
+
+    for i in range(1, len(tempo_map)):
+        t_tick, t_tempo = tempo_map[i]
+        if t_tick >= tick:
+            break
+        # 이전 구간의 시간 누적
+        delta_ticks = t_tick - prev_tick
+        elapsed_sec += mido.tick2second(delta_ticks, ticks_per_beat, prev_tempo)
+        prev_tick = t_tick
+        prev_tempo = t_tempo
+
+    # 남은 구간
+    remaining_ticks = tick - prev_tick
+    elapsed_sec += mido.tick2second(remaining_ticks, ticks_per_beat, prev_tempo)
+    return elapsed_sec
 
 
 def _get_active_pitches_at(pm, time: float, exclude_programs=None) -> set:
@@ -280,6 +348,23 @@ def _pch_similarity(source_pm, generated_pm, target_programs, np) -> float:
     if norm_s == 0 or norm_g == 0:
         return 0.0
     return float(dot / (norm_s * norm_g))
+
+
+def _degree_of_arrangement(generated_pm, target_programs, np) -> float:
+    """편곡 창의성 — 생성 파트의 음정(pitch class) 다양성.
+
+    PCH의 엔트로피(정보량)를 정규화하여 0~1 범위로 환산합니다.
+    값이 높을수록 다양한 음정을 고르게 사용했다는 뜻입니다.
+    기존 '1 - pch_similarity'는 PCH와 완전 역상관이라 독립 정보가 없었으므로,
+    생성 파트 자체의 분포 엔트로피로 대체합니다.
+    """
+    gen_pch = _get_pch(generated_pm, programs=target_programs, np=np)
+    # 이미 정규화된 분포이므로 그대로 엔트로피 계산
+    # Shannon entropy, log2(12) ≈ 3.585 로 정규화 → 0~1 범위
+    eps = 1e-12
+    entropy = -np.sum(gen_pch * np.log2(gen_pch + eps))
+    max_entropy = np.log2(12)  # 12개 pitch class 균등 분포의 최대 엔트로피
+    return float(np.clip(entropy / max_entropy, 0.0, 1.0))
 
 
 def _dissonance_rate(source_pm, generated_pm, target_programs, resolution, np) -> float:

@@ -28,9 +28,8 @@ services:
              optuna-dashboard sqlite:////data/optuna_studies.db
              --host 0.0.0.0 --port 8080"
     volumes:
-      # GPU 서버의 tutti-backend-ai 디렉토리 → 컨테이너 /data
-      # optuna_studies.db 파일이 여기에 생성됨
-      - /root/tutti-backend-ai:/data:ro
+      # PROJECT_DIR 환경변수(.env)로 프로젝트 경로 주입 (하드코딩 제거)
+      - ${PROJECT_DIR:-.}:/data:ro
     ports:
       - "127.0.0.1:8080:8080"   # 로컬만 바인딩 (Cloudflare Tunnel이 외부 노출)
     restart: unless-stopped

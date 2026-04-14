@@ -66,10 +66,12 @@ Optuna가 편곡 파라미터(temperature, top_p, rest_penalty 등)를 자동 �
 """
 
 import argparse
+import gc
 import logging
 import math
 import os
 import random as _random
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -107,10 +109,12 @@ METRIC_DIRECTIONS = {
 
 def _load_model(model_type: str | None = None):
     """모델을 로드합니다. (최초 1회만)"""
+    from app.core.config import settings
     from app.core.model_registry import ModelRegistry
 
-    registry = ModelRegistry()
-    registry.load_all()
+    model_dir = Path(settings.MODEL_DIR)
+    registry = ModelRegistry(model_dir)
+    registry.load_all_models()
     loaded = registry.get_model(model_type)
     logger.info(f"모델 로드 완료: {loaded.name} (device={loaded.device})")
     return loaded
@@ -175,9 +179,9 @@ def _sample_files(
 
 def _run_trial_inference(source_file: Path, target: str, genre: str,
                          loaded, params: dict,
-                         output_dir: Path) -> dict:
+                         output_dir: Path,
+                         trial_number: int = 0) -> dict:
     """단일 트라이얼의 추론을 실행하고 메트릭을 반환합니다."""
-    from ai_core.arrangement import run_arrangement
     from ai_core.metrics import compute_basic_quality_metrics, compute_musical_quality
 
     output_path = output_dir / f"{source_file.stem}_tuned.mid"
@@ -197,8 +201,10 @@ def _run_trial_inference(source_file: Path, target: str, genre: str,
         pitch_max = cfg["pitch_max"]
         _device = loaded.device
 
-        random.seed(42)
-        torch.manual_seed(42)
+        # 트라이얼별 다른 시드 → 같은 파라미터라도 다른 샘플링 결과
+        seed = 42 + trial_number
+        random.seed(seed)
+        torch.manual_seed(seed)
 
         header, bar_tokens, max_bar, source_pm = midi_to_bar_tokens(
             str(source_file), genre, loaded.vocab
@@ -220,16 +226,17 @@ def _run_trial_inference(source_file: Path, target: str, genre: str,
             logger.warning(f"빈 결과 — {source_file.name}")
             return {}
 
-        result_path = save_midi(
-            all_notes, str(output_path), source_pm,
+        save_midi(
+            all_notes, source_pm, str(output_path),
+            target_prog, target,
             original_song_path=str(source_file),
         )
 
-        # 메트릭 계산
-        basic = compute_basic_quality_metrics(str(result_path))
+        # 메트릭 계산 — save_midi()는 반환값이 없으므로 output_path 직접 사용
+        basic = compute_basic_quality_metrics(str(output_path))
         musical = compute_musical_quality(
             source_path=str(source_file),
-            generated_path=str(result_path),
+            generated_path=str(output_path),
         )
         basic.update(musical)
         return basic
@@ -237,6 +244,15 @@ def _run_trial_inference(source_file: Path, target: str, genre: str,
     except Exception as e:
         logger.error(f"트라이얼 추론 실패: {e}", exc_info=True)
         return {}
+    finally:
+        # GPU VRAM 해제 — KV cache 등 GPU 텐서가 즉시 해제되도록 강제
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
+        except Exception:
+            pass
 
 
 def create_objective(
@@ -329,15 +345,18 @@ def create_objective(
         all_scores = []
         for step, source_file in enumerate(trial_files):
             metrics = _run_trial_inference(
-                source_file, target, genre, loaded, params, output_dir
+                source_file, target, genre, loaded, params, output_dir,
+                trial_number=trial.number,
             )
 
             if metrics and optimize_metric in metrics:
                 score = metrics[optimize_metric]
                 all_scores.append(score)
 
-                # MLflow에 개별 파일 결과도 기록
-                _log_trial_to_mlflow(trial, source_file.name, params, metrics)
+                # MLflow 개별 파일 결과: step 기반 기록 (nested run 과다 생성 방지)
+                _log_file_metric_to_mlflow(
+                    trial, step, source_file.name, optimize_metric, score,
+                )
 
                 # ── 조기 종료 (Pruning) ──
                 # 파일 하나를 평가할 때마다 중간 결과를 Optuna에 보고합니다.
@@ -365,7 +384,8 @@ def create_objective(
 
         if not all_scores:
             logger.warning(f"[Trial {trial.number}] 유효한 결과 없음")
-            return float("nan")
+            import optuna
+            raise optuna.TrialPruned("유효한 결과 없음")
 
         avg_score = sum(all_scores) / len(all_scores)
         logger.info(
@@ -377,23 +397,18 @@ def create_objective(
     return objective
 
 
-def _log_trial_to_mlflow(trial, source_name: str, params: dict, metrics: dict):
-    """개별 트라이얼을 MLflow에 기록합니다."""
+def _log_file_metric_to_mlflow(trial, step: int, source_name: str,
+                                metric_name: str, score: float):
+    """개별 파일의 메트릭을 step 기반으로 기록합니다.
+
+    nested run을 파일마다 생성하지 않고, 상위 트라이얼 run에
+    step 기반 메트릭으로 기록합니다 (MLflow UI 성능 보호).
+    """
     try:
         import mlflow
-
-        with mlflow.start_run(nested=True, run_name=f"trial-{trial.number}-{source_name}"):
-            mlflow.log_param("trial_number", trial.number)
-            mlflow.log_param("source_file", source_name)
-
-            for key, value in params.items():
-                mlflow.log_param(key, value)
-
-            for key, value in metrics.items():
-                if isinstance(value, (int, float)):
-                    mlflow.log_metric(key, value)
+        mlflow.log_metric(f"file_{metric_name}", score, step=step)
     except Exception as e:
-        logger.warning(f"MLflow 기록 실패 (비치명적): {e}")
+        logger.warning(f"MLflow 파일 메트릭 기록 실패 (비치명적): {e}")
 
 
 def main():
@@ -502,7 +517,9 @@ def main():
 
     # ── 최적화 방향 ──
     direction = args.direction or METRIC_DIRECTIONS[args.optimize]
-    study_name = args.study_name or f"tune-{args.target}-{args.optimize}"
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    study_name = args.study_name or f"tune-{args.target}-{args.optimize}-{timestamp}"
 
     # ── SQLite 저장소 (optuna-dashboard 연동) ──
     db_path = Path(args.db_path).resolve()
@@ -511,11 +528,17 @@ def main():
     # ── 임시 출력 디렉토리 ──
     output_dir = Path(tempfile.mkdtemp(prefix="optuna_tune_"))
 
-    # ── MLflow 설정 ──
+    # ── MLflow 설정 (연결 실패 시 자동 비활성화) ──
     if not args.no_mlflow:
-        import mlflow
-        mlflow.set_tracking_uri("http://localhost:5000")
-        mlflow.set_experiment(args.experiment)
+        try:
+            import mlflow
+            tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+            mlflow.set_tracking_uri(tracking_uri)
+            mlflow.set_experiment(args.experiment)
+            logger.info(f"MLflow 연결 성공: {tracking_uri}")
+        except Exception as e:
+            logger.warning(f"MLflow 연결 실패, 기록 없이 진행합니다: {e}")
+            args.no_mlflow = True
 
     # ── Optuna 프루너 설정 ──
     # MedianPruner: 중간 결과가 전체 트라이얼 중간값보다 나쁘면 프루닝
@@ -587,31 +610,36 @@ def main():
     )
 
     # ── 최적화 실행 ──
-    if not args.no_mlflow:
-        import mlflow
-        with mlflow.start_run(run_name=f"tuning-{study_name}"):
-            mlflow.log_param("target", args.target)
-            mlflow.log_param("genre", args.genre)
-            mlflow.log_param("optimize_metric", args.optimize)
-            mlflow.log_param("direction", direction)
-            mlflow.log_param("n_trials", args.n_trials)
-            mlflow.log_param("n_source_files", len(source_files))
-            mlflow.log_param("db_path", str(db_path))
-            # 최적화 전략 파라미터도 MLflow에 기록
-            mlflow.log_param("pruning", args.pruning)
-            mlflow.log_param("sample_ratio", args.sample_ratio)
-            mlflow.log_param("max_files", args.max_files or "all")
-            mlflow.log_param("effective_files_per_trial", effective_files)
+    try:
+        if not args.no_mlflow:
+            import mlflow
+            with mlflow.start_run(run_name=f"tuning-{study_name}"):
+                mlflow.log_param("target", args.target)
+                mlflow.log_param("genre", args.genre)
+                mlflow.log_param("optimize_metric", args.optimize)
+                mlflow.log_param("direction", direction)
+                mlflow.log_param("n_trials", args.n_trials)
+                mlflow.log_param("n_source_files", len(source_files))
+                mlflow.log_param("db_path", str(db_path))
+                # 최적화 전략 파라미터도 MLflow에 기록
+                mlflow.log_param("pruning", args.pruning)
+                mlflow.log_param("sample_ratio", args.sample_ratio)
+                mlflow.log_param("max_files", args.max_files or "all")
+                mlflow.log_param("effective_files_per_trial", effective_files)
 
+                study.optimize(objective, n_trials=args.n_trials)
+
+                # 최적 결과 기록
+                if study.best_trial:
+                    mlflow.log_metric(f"best_{args.optimize}", study.best_value)
+                    for key, value in study.best_params.items():
+                        mlflow.log_metric(f"best_{key}", value)
+        else:
             study.optimize(objective, n_trials=args.n_trials)
-
-            # 최적 결과 기록
-            if study.best_trial:
-                mlflow.log_metric(f"best_{args.optimize}", study.best_value)
-                for key, value in study.best_params.items():
-                    mlflow.log_metric(f"best_{key}", value)
-    else:
-        study.optimize(objective, n_trials=args.n_trials)
+    finally:
+        # 임시 출력 디렉토리 정리
+        shutil.rmtree(output_dir, ignore_errors=True)
+        logger.info(f"임시 디렉토리 정리 완료: {output_dir}")
 
     # ── 결과 출력 ──
     # 프루닝 통계

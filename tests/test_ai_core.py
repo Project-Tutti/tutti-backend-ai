@@ -9,6 +9,12 @@ import os
 # 프로젝트 루트를 path에 추가
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+try:
+    import torch  # noqa: F401
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
 
 # ──────────────────────────────────────────────
 # 1. constants 모듈 테스트
@@ -61,6 +67,7 @@ class TestVocab:
 # ──────────────────────────────────────────────
 # 3. arrangement 모듈 테스트
 # ──────────────────────────────────────────────
+@pytest.mark.skipif(not HAS_TORCH, reason="torch not installed")
 class TestArrangement:
     def test_resolve_target_valid(self):
         from ai_core.arrangement import resolve_target
@@ -121,6 +128,7 @@ class TestPostprocess:
 # ──────────────────────────────────────────────
 # 5. facade (inference.py) 하위 호환성 테스트
 # ──────────────────────────────────────────────
+@pytest.mark.skipif(not HAS_TORCH, reason="torch not installed")
 class TestFacade:
     def test_facade_exports_run_arrangement(self):
         from app.services.inference import run_arrangement
@@ -192,4 +200,7 @@ class TestMetrics:
         from ai_core.metrics import compute_basic_quality_metrics
 
         result = compute_basic_quality_metrics("/nonexistent/file.mid")
-        assert result == {}
+        # 에러 시 zero-filled dummy dict 반환 (downstream JSON 스키마 호환)
+        assert isinstance(result, dict)
+        assert result.get("note_count") == 0
+        assert result.get("avg_velocity") == 0.0

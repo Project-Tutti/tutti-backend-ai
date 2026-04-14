@@ -23,6 +23,7 @@ AI 개발자가 모델 테스트할 때 사용하는 스크립트.
 """
 
 import argparse
+import os
 import sys
 import logging
 from pathlib import Path
@@ -105,7 +106,7 @@ def log_to_mlflow(source: str, generated: str, metrics: dict,
         logger.warning("MLflow가 설치되지 않아 기록을 건너뜁니다")
         return
 
-    mlflow.set_tracking_uri("http://localhost:5000")
+    mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000"))
     mlflow.set_experiment(experiment)
 
     if run_name is None:
@@ -143,7 +144,8 @@ def main():
     # 디렉토리면 배치 평가
     if source_path.is_dir() and generated_path.is_dir():
         pairs = []
-        for gen_file in sorted(generated_path.glob("*.mid")):
+        gen_files = sorted(generated_path.glob("*.mid")) + sorted(generated_path.glob("*.midi"))
+        for gen_file in gen_files:
             src_file = source_path / gen_file.name
             if src_file.exists():
                 pairs.append((str(src_file), str(gen_file)))

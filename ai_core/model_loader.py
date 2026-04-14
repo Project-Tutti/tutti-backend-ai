@@ -56,7 +56,6 @@ def load_model(ckpt_path: str, vocab_size: int, vocab: dict, device: str):
     else:
         raise FileNotFoundError(f"체크포인트 없음: {ckpt_path}")
 
-    model.config.use_cache = False
     model.eval()
     model.to(_device)
 

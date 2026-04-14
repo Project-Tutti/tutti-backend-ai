@@ -44,9 +44,12 @@ jobs:
       - name: Verify contracts
         run: |
           uv run python -c "
-          from contracts.interfaces import ArrangementEngine
-          from ai_core.arrangement import run_arrangement, resolve_target
-          print('✅ Contract verification passed')
+          from contracts.interfaces import ArrangementRunner, TargetResolver, ModelLoader, VocabBuilder
+          print('✅ Contract interfaces importable')
+          print(f'  ArrangementRunner: {ArrangementRunner}')
+          print(f'  TargetResolver: {TargetResolver}')
+          print(f'  ModelLoader: {ModelLoader}')
+          print(f'  VocabBuilder: {VocabBuilder}')
           "
 
   # ================================================================
