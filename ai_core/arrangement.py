@@ -14,7 +14,7 @@ from ai_core.constants import INSTRUMENT_GROUPS, PROGRAM_TO_REP, _REP_TO_GROUP
 from ai_core.tokenizer import midi_to_bar_tokens
 from ai_core.generator import generate_for_target
 from ai_core.postprocess import postprocess
-from app.services.midi_writer import save_midi
+from ai_core.midi_writer import save_midi
 
 logger = logging.getLogger(__name__)
 

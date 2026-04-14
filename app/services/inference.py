@@ -25,8 +25,8 @@ from ai_core.constants import (
     MONOPHONIC_INSTRUMENTS,
 )
 
-# save_midi — midi_writer에서 re-export
-from app.services.midi_writer import save_midi
+# save_midi — ai_core에서 re-export
+from ai_core.midi_writer import save_midi
 
 __all__ = [
     "run_arrangement",
