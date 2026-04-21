@@ -410,15 +410,47 @@ def midi_to_bar_tokens(midi_path, genre, VOCAB):
 
 
 # ──────────────────────────────────────────────
-# 컨텍스트 트리밍
+# 컨텍스트 트리밍 (마디 단위, 비율 보존)
 # ──────────────────────────────────────────────
-def trim_context_to_bar_boundary(context, header, VOCAB, max_tokens=1748):
-    if len(context) <= max_tokens:
-        return context
-    overflow  = context[-max_tokens:]
-    first_bar = next((i for i, t in enumerate(overflow)
-                      if t == VOCAB["BAR_START"]), 0)
-    return list(header) + overflow[first_bar:]
+def trim_bars_preserving_ratio(past_bars, future_bars,
+                               header_len, current_len, max_ctx,
+                               target_past_ratio):
+    """마디 단위로 제거하며 목표 past:future 비율을 최대한 유지."""
+    p_list = list(past_bars)
+    f_list = list(future_bars)
+
+    def total():
+        return (header_len + current_len
+                + sum(len(t) for _, t in p_list)
+                + sum(len(t) for _, t in f_list))
+
+    while total() > max_ctx and (p_list or f_list):
+        p_count = len(p_list)
+        f_count = len(f_list)
+
+        if not p_list:
+            removed = f_list.pop()
+            logger.info(f"    ✂️  Future Bar {removed[0]} 제거 ({len(removed[1])} tok)")
+            continue
+        if not f_list:
+            removed = p_list.pop(0)
+            logger.info(f"    ✂️  Past Bar {removed[0]} 제거 ({len(removed[1])} tok)")
+            continue
+
+        ratio_if_remove_past = (p_count - 1) / (p_count - 1 + f_count) if (p_count - 1 + f_count) > 0 else 0
+        ratio_if_remove_future = p_count / (p_count + f_count - 1) if (p_count + f_count - 1) > 0 else 1
+
+        diff_past   = abs(ratio_if_remove_past   - target_past_ratio)
+        diff_future = abs(ratio_if_remove_future - target_past_ratio)
+
+        if diff_future <= diff_past:
+            removed = f_list.pop()
+            logger.info(f"    ✂️  Future Bar {removed[0]} 제거 ({len(removed[1])} tok)")
+        else:
+            removed = p_list.pop(0)
+            logger.info(f"    ✂️  Past Bar {removed[0]} 제거 ({len(removed[1])} tok)")
+
+    return p_list, f_list
 
 
 # ──────────────────────────────────────────────
@@ -506,7 +538,7 @@ def merge_bars(source_bar_toks, gen_bar_toks, VOCAB, VOCAB_R):
 @torch.no_grad()
 def generate_sliding_window(model, header, bar_tokens, max_bar,
                              target_prog, pitch_min, pitch_max,
-                             window_bars, context_bars,
+                             window_bars, context_bars, future_bars,
                              temperature, top_p,
                              VOCAB, VOCAB_R, source_pm, device,
                              monophonic=True, progress_hook=None):
@@ -518,7 +550,9 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
     VEL_IDS        = {VOCAB[f"VEL={i}"] for i in range(32)}
     INST_TARGET_ID = VOCAB[f"INST={target_prog}"]
 
+    target_past_ratio = context_bars / (context_bars + future_bars) if (context_bars + future_bars) > 0 else 0.5
     total_windows = (max_bar // window_bars) + 1
+    
     logger.info(f"   총 {max_bar+1}마디 / 윈도우 {window_bars}마디 → {total_windows}번 생성")
     logger.info(f"   단선율 강제: {'ON' if monophonic else 'OFF (폴리포닉)'}")
 
@@ -534,16 +568,55 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
             break
 
         ctx_start = max(0, win_start - context_bars)
-        context   = list(header)
-        for b in range(ctx_start, win_start):
-            context += bar_tokens.get(b, [])
-        for b in range(ctx_start, win_start):
-            if b in gen_bar_tokens:
-                context += gen_bar_tokens[b]
-        for b in range(win_start, win_end + 1):
-            context += bar_tokens.get(b, [])
+        fut_end   = min(max_bar, win_end + future_bars)
 
-        context   = trim_context_to_bar_boundary(context, header, VOCAB, MAX_CTX)
+        # 1. Header (고정)
+        header_toks = list(header)
+
+        # 2. Past (과거 원본 + 과거 생성 결과)
+        past_bar_list = []
+        for b in range(ctx_start, win_start):
+            bar_toks = list(bar_tokens.get(b, []))
+            if b in gen_bar_tokens:
+                bar_toks += gen_bar_tokens[b]
+            if bar_toks:
+                past_bar_list.append((b, bar_toks))
+
+        # 3. Current Window (현재 작곡해야 할 구간의 원본)
+        current_toks = []
+        for b in range(win_start, win_end + 1):
+            current_toks += bar_tokens.get(b, [])
+
+        # 4. Future (미래 가이드라인 원본)
+        future_bar_list = []
+        for b in range(win_end + 1, fut_end + 1):
+            bar_toks = list(bar_tokens.get(b, []))
+            if bar_toks:
+                future_bar_list.append((b, bar_toks))
+
+        h_len = len(header_toks)
+        p_len = sum(len(t) for _, t in past_bar_list)
+        c_len = len(current_toks)
+        f_len = sum(len(t) for _, t in future_bar_list)
+        total_len = h_len + p_len + c_len + f_len
+
+        logger.info(f"   --- WINDOW #{win_idx} (Bar {win_start}~{win_end}) ---")
+        logger.info(f"   ● [Context] Past: {p_len} | Current: {c_len} | Future: {f_len} -> Total: {total_len}/{SEQ_LEN}")
+
+        if total_len > MAX_CTX:
+            logger.warning(f"   ⚠️ OVERFLOW! {total_len - MAX_CTX} tokens over limit. Trimming...")
+            past_bar_list, future_bar_list = trim_bars_preserving_ratio(
+                past_bar_list, future_bar_list,
+                h_len, c_len, MAX_CTX, target_past_ratio)
+
+        past_toks = []
+        for _, toks in past_bar_list:
+            past_toks += toks
+        future_toks = []
+        for _, toks in future_bar_list:
+            future_toks += toks
+
+        context = header_toks + past_toks + current_toks + future_toks
         input_ids = torch.tensor([context], dtype=torch.long, device=device)
         gen_toks  = []
 
@@ -577,12 +650,14 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
 
                 logits  = logits / temperature
                 probs   = torch.softmax(logits, dim=-1)
+
+                # Top-p Sampling
                 s_probs, s_idx = torch.sort(probs, descending=True)
-                cumsum  = torch.cumsum(s_probs, dim=0)
-                cutoff  = (cumsum - s_probs > top_p).nonzero()
-                if len(cutoff):
-                    s_probs[cutoff[0].item():] = 0
+                cumsum = torch.cumsum(s_probs, dim=0)
+                mask = cumsum - s_probs > top_p
+                s_probs[mask] = 0
                 s_probs /= s_probs.sum()
+
                 next_tok = s_idx[torch.multinomial(s_probs, 1)].item()
                 gen_toks.append(next_tok)
 
@@ -856,9 +931,10 @@ def run_arrangement(
     actual_midi_program: int = None,
 ) -> str:
     """편곡 추론 실행 - 외부에서 호출되는 API 엔트리포인트."""
-    # 고정 하이퍼파라미터
-    window_bars = 4
-    context_bars = 4
+    # 고정 하이퍼파라미터 (2-2-2 셋업 반영)
+    context_bars = 20
+    window_bars = 2
+    future_bars = 10
     top_p = 0.95
     seed = 42
 
@@ -901,7 +977,7 @@ def run_arrangement(
     all_notes = generate_sliding_window(
         model, header, bar_tokens, max_bar,
         target_prog, pitch_min, pitch_max,
-        window_bars, context_bars,
+        window_bars, context_bars, future_bars,
         temperature, top_p,
         vocab, vocab_r, source_pm, _device,
         monophonic=monophonic,
