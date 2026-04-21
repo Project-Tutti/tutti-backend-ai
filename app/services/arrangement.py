@@ -14,7 +14,7 @@ from pathlib import Path
 from app.schemas.request import ArrangeRequest
 from app.services.callback import send_callback, send_callback_with_file
 from app.services.midi_processor import download_midi, remap_original_tracks
-from app.services.inference import run_arrangement, resolve_target
+from app.services.inference import run_arrangement
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -60,14 +60,13 @@ async def process_arrangement(request: ArrangeRequest, registry):
         })
 
         # Step 3: 추론 — 단일 타겟 1회 생성 (80%)
-        #   targetInstrumentId → INSTRUMENT_GROUPS 키로 변환
         #   모델은 modelType으로 선택 (None이면 기본 모델)
-        target_name = resolve_target(request.targetInstrumentId)
+        target_prog = request.targetInstrumentId
         loaded = registry.get_model(request.modelType)  # LoadedModel
 
         logger.info(
             f"[{job_id}] Step 3: Inference "
-            f"(target={target_name}, model={loaded.name}, "
+            f"(target_prog={target_prog}, model={loaded.name}, "
             f"genre={request.genre}, temp={request.temperature})"
         )
 
@@ -91,7 +90,7 @@ async def process_arrangement(request: ArrangeRequest, registry):
             None,
             run_arrangement,
             str(mapped_midi_path),  # song_path (매핑된 컨텍스트)
-            target_name,            # target
+            target_prog,            # target
             request.genre,          # genre
             request.temperature,    # temperature
             request.minNote,        # pitch_min (None이면 기본값)
@@ -103,8 +102,8 @@ async def process_arrangement(request: ArrangeRequest, registry):
             loaded.device,          # device
             inference_progress_hook,# progress_hook
             str(midi_path),         # 🚨 순수 원본(Unmodified) 파일 (Append 저장 시 사용)
-            request.targetInstrumentName,  # actual_instrument_name (None→기존 target_name 사용)
-            request.targetMidiProgram,     # actual_midi_program (None→기존 target_prog 사용)
+            request.targetInstrumentName,  # actual_instrument_name
+            request.targetMidiProgram,     # actual_midi_program
         )
 
         await send_callback(cb, secret, {
