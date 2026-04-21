@@ -242,7 +242,9 @@ VEL_OFFSET = 6
 # ──────────────────────────────────────────────
 # 모델 로드
 # ──────────────────────────────────────────────
-def load_model(ckpt_path, vocab_size, vocab):
+def load_model(ckpt_path, vocab_size, vocab, device):
+    _device = torch.device(device)
+
     MODEL_NAME = "Qwen/Qwen2.5-0.5B"
     config = AutoConfig.from_pretrained(MODEL_NAME)
     config.vocab_size              = vocab_size
@@ -271,6 +273,13 @@ def load_model(ckpt_path, vocab_size, vocab):
 
     model.config.use_cache = False
     model.eval()
+    model.to(_device)
+
+    # RTX 4090 / T4 TF32 가속
+    # (transformers Dynamo 충돌 이슈로 인해 torch.compile 대신 네이티브 TF32 사용)
+    torch.set_float32_matmul_precision("high")
+    logger.info("TF32 하드웨어 가속 활성화 (torch.compile 비활성화)")
+
     return model
 
 
@@ -491,6 +500,7 @@ def merge_bars(source_bar_toks, gen_bar_toks, VOCAB, VOCAB_R):
 # monophonic=True  → INST 재발음을 VEL 완결 전까지 억제 (단선율)
 # monophonic=False → 억제 없음 (폴리포닉)
 # ──────────────────────────────────────────────
+@torch.no_grad()
 def generate_sliding_window(model, header, bar_tokens, max_bar,
                              target_prog, pitch_min, pitch_max,
                              window_bars, context_bars,
