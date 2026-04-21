@@ -246,7 +246,7 @@ VEL_OFFSET = 6
 # 모델 로드
 # ──────────────────────────────────────────────
 def load_model(ckpt_path, vocab_size, vocab, device):
-    _device = torch.device(device)
+    #_device = torch.device(device)
 
     MODEL_NAME = "Qwen/Qwen2.5-0.5B"
     config = AutoConfig.from_pretrained(MODEL_NAME)
@@ -276,7 +276,7 @@ def load_model(ckpt_path, vocab_size, vocab, device):
 
     model.config.use_cache = False
     model.eval()
-    model.to(_device)
+    #model.to(_device)
 
     # RTX 4090 / T4 TF32 가속
     # (transformers Dynamo 충돌 이슈로 인해 torch.compile 대신 네이티브 TF32 사용)
