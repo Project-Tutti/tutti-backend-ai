@@ -857,8 +857,8 @@ def run_arrangement(
 ) -> str:
     """편곡 추론 실행 - 외부에서 호출되는 API 엔트리포인트."""
     # 고정 하이퍼파라미터
-    window_bars = 8
-    context_bars = 8
+    window_bars = 4
+    context_bars = 4
     top_p = 0.95
     seed = 42
 
@@ -927,4 +927,4 @@ def run_arrangement(
               actual_instrument_name=actual_instrument_name,
               actual_midi_program=actual_midi_program)
 
-    return output_path
+    return output_path
