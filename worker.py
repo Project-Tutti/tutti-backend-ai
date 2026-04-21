@@ -52,7 +52,7 @@ import requests
 # ─── 프로젝트 내부 모듈 ───
 from app.core.config import settings
 from app.core.model_registry import ModelRegistry
-from app.services.inference import run_arrangement, resolve_target
+from app.services.inference import run_arrangement
 from app.services.midi_processor import remap_original_tracks
 from app.schemas.request import Mapping
 
@@ -339,12 +339,12 @@ def process_job(
         callback.send_progress(cb_url, cb_secret, _payload("processing", 20))
 
         # ── Step 3: 추론 (20% → 80%) ────────────────────────
-        target_name = resolve_target(job_data["targetInstrumentId"])
+        target_prog = int(job_data["targetInstrumentId"])
         loaded = registry.get_model(job_data.get("modelType"))
 
         logger.info(
             f"[{job_id}] Step 3/4: 추론 시작 "
-            f"(target={target_name}, model={loaded.name}, "
+            f"(target_prog={target_prog}, model={loaded.name}, "
             f"genre={job_data.get('genre', 'CLASSICAL')}, "
             f"temp={job_data.get('temperature', 1.0)})"
         )
@@ -369,7 +369,7 @@ def process_job(
 
         result_file = run_arrangement(
             song_path=str(mapped_midi_path),
-            target=target_name,
+            target_prog=target_prog,
             genre=job_data.get("genre", "CLASSICAL"),
             temperature=job_data.get("temperature", 1.0),
             pitch_min=job_data.get("minNote"),
