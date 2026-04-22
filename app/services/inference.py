@@ -574,7 +574,7 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
         for b in range(ctx_start, win_start):
             bar_toks = list(bar_tokens.get(b, []))
             if b in gen_bar_tokens:
-                bar_toks += gen_bar_tokens[b]
+                bar_toks = merge_bars(bar_toks, gen_bar_tokens[b], VOCAB, VOCAB_R)
             if bar_toks:
                 past_bar_list.append((b, bar_toks))
 
@@ -927,7 +927,7 @@ def run_arrangement(
 ) -> str:
     """편곡 추론 실행 - 외부에서 호출되는 API 엔트리포인트."""
     # 고정 하이퍼파라미터 (2-2-2 셋업 반영)
-    context_bars = 10
+    context_bars = 8
     window_bars = 4
     future_bars = 0
     top_p = 0.95
