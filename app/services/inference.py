@@ -932,9 +932,9 @@ def run_arrangement(
 ) -> str:
     """편곡 추론 실행 - 외부에서 호출되는 API 엔트리포인트."""
     # 고정 하이퍼파라미터 (2-2-2 셋업 반영)
-    context_bars = 20
-    window_bars = 2
-    future_bars = 10
+    context_bars = 10
+    window_bars = 4
+    future_bars = 0
     top_p = 0.95
     seed = 42
 
