@@ -430,11 +430,9 @@ def trim_bars_preserving_ratio(past_bars, future_bars,
 
         if not p_list:
             removed = f_list.pop()
-            logger.info(f"    ✂️  Future Bar {removed[0]} 제거 ({len(removed[1])} tok)")
             continue
         if not f_list:
             removed = p_list.pop(0)
-            logger.info(f"    ✂️  Past Bar {removed[0]} 제거 ({len(removed[1])} tok)")
             continue
 
         ratio_if_remove_past = (p_count - 1) / (p_count - 1 + f_count) if (p_count - 1 + f_count) > 0 else 0
@@ -445,10 +443,8 @@ def trim_bars_preserving_ratio(past_bars, future_bars,
 
         if diff_future <= diff_past:
             removed = f_list.pop()
-            logger.info(f"    ✂️  Future Bar {removed[0]} 제거 ({len(removed[1])} tok)")
         else:
             removed = p_list.pop(0)
-            logger.info(f"    ✂️  Past Bar {removed[0]} 제거 ({len(removed[1])} tok)")
 
     return p_list, f_list
 
@@ -604,7 +600,6 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
         logger.info(f"   ● [Context] Past: {p_len} | Current: {c_len} | Future: {f_len} -> Total: {total_len}/{SEQ_LEN}")
 
         if total_len > MAX_CTX:
-            logger.warning(f"   ⚠️ OVERFLOW! {total_len - MAX_CTX} tokens over limit. Trimming...")
             past_bar_list, future_bar_list = trim_bars_preserving_ratio(
                 past_bar_list, future_bar_list,
                 h_len, c_len, MAX_CTX, target_past_ratio)
