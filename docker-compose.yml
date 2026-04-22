@@ -64,8 +64,40 @@ services:
       start_period: 180s
     restart: unless-stopped
 
-  # ── AI Worker: Redis Streams 소비자 (편곡 큐 처리) ──
-  ai-worker:
+  # ── AI Worker: GPU 2번 전용 (Redis Streams 소비자) ──
+  ai-worker-gpu2:
+    image: us-central1-docker.pkg.dev/${GCP_PROJECT_ID}/tutti/ai-server:latest
+    command: ["python3.11", "worker.py"]
+    environment:
+      - MODEL_DIR=/models
+      - RESULTS_DIR=/tmp/results
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - GPU_ID=0
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_TLS=${REDIS_TLS:-false}
+    volumes:
+      - ./models:/models:ro
+      - ai-results:/tmp/results
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["2"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    stop_grace_period: 10m
+    restart: unless-stopped
+
+  # ── AI Worker: GPU 3번 전용 (Redis Streams 소비자) ──
+  ai-worker-gpu3:
     image: us-central1-docker.pkg.dev/${GCP_PROJECT_ID}/tutti/ai-server:latest
     command: ["python3.11", "worker.py"]
     environment:

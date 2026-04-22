@@ -123,7 +123,7 @@ jobs:
           docker compose pull
 
           echo "🔄 4. Rolling update with Zero-Downtime config..."
-          docker compose up -d --remove-orphans
+          docker compose up -d --scale ai-worker-gpu2=3 --scale ai-worker-gpu3=3 --remove-orphans
           
           echo "🧹 5. Cleaning up old unused Docker images..."
           docker image prune -f
@@ -134,7 +134,7 @@ jobs:
           echo ""
           echo "🏥 Health check (Worker):"
           echo "  ⏳ 모델 로딩에 최대 3분 소요됩니다."
-          echo "  즉시 확인: docker compose exec ai-worker curl -sf http://localhost:8000/health"
-          docker compose ps ai-worker --format '{{.Health}}' | grep -qi healthy \
+          echo "  즉시 확인: docker compose exec ai-worker-gpu2 curl -sf http://localhost:8000/health"
+          docker compose ps ai-worker-gpu2 --format '{{.Health}}' | grep -qi healthy \
             && echo "  ✅ Worker Ready" \
-            || echo "  ⏳ Worker starting — 모델 로딩 중 (docker compose logs -f ai-worker 로 확인)"
+            || echo "  ⏳ Worker starting — 모델 로딩 중 (docker compose logs -f ai-worker-gpu2 로 확인)"
