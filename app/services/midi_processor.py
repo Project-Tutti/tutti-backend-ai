@@ -52,6 +52,71 @@ async def download_midi(midi_url: str) -> Path:
 DROP_INSTRUMENT_ID = 129  # 트랙/채널 삭제 시그널
 
 
+def is_mapping_noop(mid: mido.MidiFile, mappings: list) -> bool:
+    """주어진 매핑 데이터가 원본 MIDI의 악기 구성과 완전히 동일한지(NO-OP) 검증합니다."""
+    if not mappings:
+        return True
+        
+    for mapping in mappings:
+        if mapping.targetInstrumentId == DROP_INSTRUMENT_ID:
+            return False
+
+    is_type0 = (mid.type == 0)
+
+    if is_type0:
+        track = mid.tracks[0]
+        channels_with_notes = set()
+        for msg in track:
+            if msg.type in ('note_on', 'note_off') and hasattr(msg, 'channel'):
+                channels_with_notes.add(msg.channel)
+        valid_channels = sorted(list(channels_with_notes))
+
+        # 현재 파일의 채널별 프로그램 번호 상태 파악
+        channel_programs = {}
+        for msg in track:
+            if hasattr(msg, 'channel') and msg.type == 'program_change':
+                channel_programs[msg.channel] = msg.program
+
+        for mapping in mappings:
+            frontend_idx = mapping.trackIndex
+            if frontend_idx >= len(valid_channels):
+                continue
+            ch = valid_channels[frontend_idx]
+            
+            # 드럼 채널(9)이면 원본은 128로 간주
+            original_prog = 128 if ch == 9 else channel_programs.get(ch, 0)
+            if mapping.targetInstrumentId != original_prog:
+                return False
+    else:
+        valid_track_indices = []
+        for i, t in enumerate(mid.tracks):
+            if any(msg.type in ('note_on', 'note_off') for msg in t):
+                valid_track_indices.append(i)
+
+        for mapping in mappings:
+            frontend_idx = mapping.trackIndex
+            if frontend_idx >= len(valid_track_indices):
+                continue
+            idx = valid_track_indices[frontend_idx]
+
+            original_prog = 0
+            is_drum_channel = False
+            
+            for msg in mid.tracks[idx]:
+                if hasattr(msg, 'channel') and msg.channel == 9:
+                    is_drum_channel = True
+                if msg.type == 'program_change':
+                    original_prog = msg.program
+
+            if is_drum_channel:
+                original_prog = 128
+                
+            if mapping.targetInstrumentId != original_prog:
+                return False
+
+    return True
+
+
 def remap_original_tracks(midi_path: Path, mappings: list) -> None:
     """
     원본 MIDI의 트랙 악기를 mappings에 따라 재매핑합니다.

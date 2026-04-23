@@ -325,16 +325,26 @@ def process_job(
         logger.info(f"[{job_id}] Step 1/4: MIDI 다운로드")
         midi_path = _download_midi_sync(job_data["midiFilePath"])
 
-        # 순수 원본 보존 — 매핑은 복사본에만 적용
-        mapped_midi_path = midi_path.with_name(midi_path.stem + "_mapped.mid")
-        shutil.copy2(midi_path, mapped_midi_path)
-
         callback.send_progress(cb_url, cb_secret, _payload("processing", 10))
 
-        # ── Step 2: 트랙 재매핑 (20%) ────────────────────────
-        logger.info(f"[{job_id}] Step 2/4: 트랙 재매핑")
+        # ── Step 2: 트랙 재매핑 검증 및 전처리 (20%) ────────────────
+        logger.info(f"[{job_id}] Step 2/4: 트랙 재매핑 검증")
         mappings = [Mapping(**m) for m in job_data.get("mappings", [])]
-        remap_original_tracks(mapped_midi_path, mappings)
+        
+        from app.services.midi_processor import is_mapping_noop
+        import mido
+        tmp_mid = mido.MidiFile(str(midi_path))
+        
+        if is_mapping_noop(tmp_mid, mappings):
+            logger.info(f"[{job_id}] ↳ 맵핑 데이터가 원본과 동일합니다(NO-OP). 전처리를 생략하고 원본을 사용합니다.")
+            inference_path = midi_path
+            mapped_midi_path = None
+        else:
+            logger.info(f"[{job_id}] ↳ 커스텀 맵핑 감지. {len(mappings)}개 트랙 재매핑 수행")
+            mapped_midi_path = midi_path.with_name(midi_path.stem + "_mapped.mid")
+            shutil.copy2(midi_path, mapped_midi_path)
+            remap_original_tracks(mapped_midi_path, mappings)
+            inference_path = mapped_midi_path
 
         callback.send_progress(cb_url, cb_secret, _payload("processing", 20))
 
@@ -368,7 +378,7 @@ def process_job(
                 logger.warning(f"[{job_id}] 유효하지 않은 targetMidiProgram 무시: {target_midi_program_raw}")
 
         result_file = run_arrangement(
-            song_path=str(mapped_midi_path),
+            song_path=str(inference_path),
             target_prog=target_prog,
             genre=job_data.get("genre", "CLASSICAL"),
             temperature=job_data.get("temperature", 1.0),
