@@ -940,6 +940,9 @@ def run_arrangement(
 
     random.seed(seed)
     torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
     # TARGET_CONFIG에서 타겟 정보 수집
     target_name = "acoustic_grand_piano"
