@@ -85,14 +85,23 @@ def _remap_type1(mid: mido.MidiFile, mappings: list) -> None:
     """Type 1: trackIndex로 트랙을 찾아 처리"""
     tracks_to_delete = set()
 
+    # 프론트엔드의 @tonejs/midi 파싱 로직과 동기화
+    # (노트가 있는 트랙만 필터링한 인덱스 사용)
+    valid_track_indices = []
+    for i, t in enumerate(mid.tracks):
+        if any(msg.type in ('note_on', 'note_off') for msg in t):
+            valid_track_indices.append(i)
+
     for mapping in mappings:
-        idx = mapping.trackIndex
-        if idx >= len(mid.tracks):
+        frontend_idx = mapping.trackIndex
+        if frontend_idx >= len(valid_track_indices):
             logger.warning(
-                f"trackIndex {idx} out of range "
-                f"(총 {len(mid.tracks)} 트랙), 건너뜁니다."
+                f"trackIndex {frontend_idx} out of range "
+                f"(총 {len(valid_track_indices)} 유효 노트 트랙), 건너뜁니다."
             )
             continue
+
+        idx = valid_track_indices[frontend_idx]
 
         if mapping.targetInstrumentId == DROP_INSTRUMENT_ID:
             tracks_to_delete.add(idx)
@@ -164,14 +173,25 @@ def _remap_type0(mid: mido.MidiFile, mappings: list) -> None:
 
     Type 0에서는 모든 이벤트가 단일 트랙(tracks[0])에 있고,
     채널(channel)로 악기를 구분합니다.
-    따라서 trackIndex를 channel로 해석합니다.
+    따라서 노트가 있는 채널 목록을 정렬하여 trackIndex와 매핑합니다.
     """
     track = mid.tracks[0]
+
+    channels_with_notes = set()
+    for msg in track:
+        if msg.type in ('note_on', 'note_off') and hasattr(msg, 'channel'):
+            channels_with_notes.add(msg.channel)
+    valid_channels = sorted(list(channels_with_notes))
+
     channels_to_delete = set()
     channel_remap = {}
 
     for mapping in mappings:
-        ch = mapping.trackIndex  # Type 0에서는 trackIndex = channel
+        frontend_idx = mapping.trackIndex
+        if frontend_idx >= len(valid_channels):
+            continue
+        
+        ch = valid_channels[frontend_idx]
         if mapping.targetInstrumentId == DROP_INSTRUMENT_ID:
             channels_to_delete.add(ch)
         else:
