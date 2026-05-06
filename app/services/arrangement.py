@@ -30,8 +30,14 @@ async def process_arrangement(request: ArrangeRequest, registry):
     version_id = request.versionId
 
     try:
-        # Step 1: MIDI 다운로드 (10%)
+        # Step 1: MIDI 다운로드 (1% → 3%)
         logger.info(f"[{job_id}] Step 1: Downloading MIDI")
+        await send_callback(cb, secret, {
+            "projectId": project_id,
+            "versionId": version_id,
+            "status": "processing",
+            "progress": 1,
+        })
         midi_path = await download_midi(request.midiFilePath)
         
         # 순수 원본(Unmodified) 보존을 위해 작업용 복사본 생성
@@ -43,10 +49,10 @@ async def process_arrangement(request: ArrangeRequest, registry):
             "projectId": project_id,
             "versionId": version_id,
             "status": "processing",
-            "progress": 10,
+            "progress": 3,
         })
 
-        # Step 2: 작업용 복사본에 원본 트랙 재매핑 (20%)
+        # Step 2: 작업용 복사본에 원본 트랙 재매핑 (3% → 5%)
         #   mappings의 targetInstrumentId에 따라:
         #   - 129 → 해당 트랙/채널 삭제
         #   - 그 외 → program_change 변경
@@ -56,10 +62,10 @@ async def process_arrangement(request: ArrangeRequest, registry):
             "projectId": project_id,
             "versionId": version_id,
             "status": "processing",
-            "progress": 20,
+            "progress": 5,
         })
 
-        # Step 3: 추론 — 단일 타겟 1회 생성 (80%)
+        # Step 3: 추론 — 단일 타겟 1회 생성 (5% → 97%)
         #   모델은 modelType으로 선택 (None이면 기본 모델)
         target_prog = request.targetInstrumentId
         loaded = registry.get_model(request.modelType)  # LoadedModel
@@ -106,14 +112,13 @@ async def process_arrangement(request: ArrangeRequest, registry):
             request.targetMidiProgram,     # actual_midi_program
         )
 
+        # Step 4: 파일 전송 (97% → 100%)
         await send_callback(cb, secret, {
             "projectId": project_id,
             "versionId": version_id,
             "status": "processing",
-            "progress": 80,
+            "progress": 97,
         })
-
-        # Step 4: 콜백 전송 (100%)
         logger.info(f"[{job_id}] Step 4: Sending result file")
         await send_callback_with_file(cb, secret, {
             "projectId": project_id,

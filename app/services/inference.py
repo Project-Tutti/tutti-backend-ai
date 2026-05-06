@@ -548,6 +548,7 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
 
     target_past_ratio = context_bars / (context_bars + future_bars) if (context_bars + future_bars) > 0 else 0.5
     total_windows = (max_bar // window_bars) + 1
+    last_reported_pct = 4  # 5부터 전송 시작하도록 초기화
     
     logger.info(f"   총 {max_bar+1}마디 / 윈도우 {window_bars}마디 → {total_windows}번 생성")
     logger.info(f"   단선율 강제: {'ON' if monophonic else 'OFF (폴리포닉)'}")
@@ -555,10 +556,6 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
     for win_idx in range(total_windows):
         win_start = win_idx * window_bars
         win_end   = min(win_start + window_bars - 1, max_bar)
-        
-        if progress_hook is not None:
-            pct = int(20 + (win_idx / total_windows) * 60)
-            progress_hook(pct)
 
         if win_start > max_bar:
             break
@@ -629,7 +626,14 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
             target_playing = True   # 첫 INST 강제 주입 후 발음 중
             cur_in = torch.tensor([[gen_toks[-1]]], dtype=torch.long, device=device)
 
-            for _ in range(1024):
+            for step in range(1024):
+                # ── 1% 단위 진행도 보간 (추론 로직 무관) ──
+                if progress_hook is not None:
+                    pct = int(5 + ((win_idx + step / 1024) / total_windows) * 90)
+                    if pct > last_reported_pct:
+                        last_reported_pct = pct
+                        progress_hook(pct)
+
                 out    = model(input_ids=cur_in, past_key_values=pkv, use_cache=True)
                 pkv    = out.past_key_values
                 logits = out.logits[0, -1, :].float()
@@ -982,6 +986,9 @@ def run_arrangement(
         progress_hook=progress_hook
     )
 
+    if progress_hook is not None:
+        progress_hook(95)
+
     logger.info(f"디코딩 노트: {len(all_notes)}")
     
     if target_prog != 128:
@@ -993,6 +1000,9 @@ def run_arrangement(
         
     logger.info(f"후처리 후: {len(all_notes)}")
 
+    if progress_hook is not None:
+        progress_hook(96)
+
     if len(all_notes) == 0:
         raise RuntimeError("No notes generated.")
 
@@ -1000,5 +1010,8 @@ def run_arrangement(
               original_song_path=original_song_path,
               actual_instrument_name=actual_instrument_name,
               actual_midi_program=actual_midi_program)
+
+    if progress_hook is not None:
+        progress_hook(97)
 
     return output_path
