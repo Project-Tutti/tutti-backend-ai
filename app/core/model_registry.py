@@ -91,7 +91,7 @@ class ModelRegistry:
         self, model_type: str, ckpt_path: Path, name: str
     ) -> LoadedModel:
         if model_type == "qwen2.5":
-            from app.services.inference import build_v5_vocab, load_model
+            from app.services.inference import build_v6_vocab, load_model
             import torch
             import json
 
@@ -108,9 +108,9 @@ class ModelRegistry:
                 except Exception as e:
                     logger.warning(f"config.json 파싱 실패, 기본값 682 사용: {e}")
 
-            vocab = build_v5_vocab(actual_vocab_size=actual_vocab_size)
+            vocab = build_v6_vocab()
             vocab_r = {v: k for k, v in vocab.items()}
-            model = load_model(str(ckpt_path), len(vocab), vocab, device)
+            model = load_model(str(ckpt_path), actual_vocab_size, vocab, device)
 
             return LoadedModel(
                 name=name,

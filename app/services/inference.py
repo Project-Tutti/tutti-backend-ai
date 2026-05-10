@@ -196,51 +196,82 @@ VEL_OFFSET     = 6
 
 
 # ──────────────────────────────────────────────
-# Vocabulary
+# Vocabulary (V6)
 # ──────────────────────────────────────────────
-def build_v5_vocab(actual_vocab_size: int = 682):
+def build_v6_vocab():
+    """
+    V6 vocab 빌드.
+    스펙 문서에 정의된 순서대로 토큰을 등록하여 총 645개의 토큰 ID를 생성합니다.
+    토큰 ID는 등록 순서대로 0부터 연속 할당됩니다.
+
+    Returns:
+        vocab (dict): {token_str: token_id} 형태의 딕셔너리
+    """
     vocab = {}
 
-    def add(prefix, r):
-        for i in r: vocab[f"{prefix}{i}"] = len(vocab)
+    def add(token):
+        if token not in vocab:
+            vocab[token] = len(vocab)
 
-    for t in ["PAD", "BOS", "EOS", "SEP", "PIECE_START", "PIECE_END",
-              "BAR_START", "BAR_END", "PHRASE_END", "<PRE>", "<SUF>", "<MID>"]:
-        vocab[t] = len(vocab)
-    for g in ["CLASSICAL", "JAZZ", "POP", "ROCK", "ELECTRONIC", "FOLK", "UNKNOWN"]:
-        vocab[f"GENRE_{g}"] = len(vocab)
-    roots = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-    for r in roots:
-        for m in [":maj", ":min"]: vocab[f"KEY_{r}{m}"] = len(vocab)
-    vocab["KEY_NONE"] = len(vocab)
-    
-    # vocab_size가 682 이상일 때만 기존 TARGET_ 토큰 3종 포함
-    if actual_vocab_size >= 682:
-        for p in [40, 68, 73]: vocab[f"TARGET_{p}"] = len(vocab)
+    # 1. FIM 마커 (3종)
+    for t in ["<PRE>", "<SUF>", "<MID>"]:
+        add(t)
+
+    # 2. 구조 토큰 (7종)
+    for t in ["PAD", "BOS", "EOS", "PIECE_START", "PIECE_END", "BAR_START", "BAR_END"]:
+        add(t)
+
+    # 3. 장르 (5종)
+    for g in ["POP", "ROCK", "ELECTRONIC", "CLASSICAL", "OTHER"]:
+        add(f"GENRE_{g}")
+
+    # 4. 키 (12 × 2 + NONE = 25종)
+    for r in ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]:
+        for m in [":maj", ":min"]:
+            add(f"KEY_{r}{m}")
+    add("KEY_NONE")
+
+    # 5. 박자 (6종)
     for m in ["4:4", "3:4", "2:4", "6:8", "12:8", "OTHER"]:
-        vocab[f"METER_{m}"] = len(vocab)
-    add("DENSITY_", range(1, 6))
-    add("INST=", range(129))
-    for a in ["ART_NORMAL", "ART_LEGATO", "ART_VIBRATO", "ART_STACCATO"]:
-        vocab[a] = len(vocab)
-    add("EXPR_", range(32))
-    add("TIME=", range(96))
-    add("PITCH=", range(128))
-    add("DUR=", range(1, 193))
-    add("VEL=", range(32))
-    for w in ["melodic", "epic", "calm", "fast", "slow", "sad", "happy",
-              "piano", "strings", "orchestra", "cinematic"]:
-        vocab[f"TEXT_{w}"] = len(vocab)
-    return vocab
+        add(f"METER_{m}")
 
+    # 6. TARGET_INST (17종)
+    for p in [40, 41, 42, 43, 56, 57, 58, 60, 64, 65, 66, 67, 68, 69, 70, 71, 73]:
+        add(f"TARGET_{p}")
+
+    # 7. DENSITY (1~5 = 5종)
+    for d in range(1, 6):
+        add(f"DENSITY_{d}")
+
+    # 8. INST (0~128, 128=드럼 = 129종)
+    for i in range(129):
+        add(f"INST={i}")
+
+    # 9. TIME (0~95 = 96종)
+    for t in range(96):
+        add(f"TIME={t}")
+
+    # 10. PITCH (0~127 = 128종)
+    for p in range(128):
+        add(f"PITCH={p}")
+
+    # 11. DUR (1~192 = 192종)
+    for d in range(1, 193):
+        add(f"DUR={d}")
+
+    # 12. VEL (0~31 = 32종)
+    for v in range(32):
+        add(f"VEL={v}")
+
+    return vocab
 
 FLAT_TO_SHARP = {
     "Db": "C#", "Eb": "D#", "Fb": "E", "Gb": "F#",
     "Ab": "G#", "Bb": "A#", "Cb": "B"
 }
 
-NOTE_TOKEN_LEN = 7
-VEL_OFFSET = 6
+NOTE_TOKEN_LEN = 5
+VEL_OFFSET = 4
 
 # ──────────────────────────────────────────────
 # 모델 로드
@@ -252,7 +283,7 @@ def load_model(ckpt_path, vocab_size, vocab, device):
     config = AutoConfig.from_pretrained(MODEL_NAME)
     config.vocab_size              = vocab_size
     config.pad_token_id            = vocab["PAD"]
-    config.max_position_embeddings = 2048
+    config.max_position_embeddings = 8192
     config.sliding_window          = None
 
     model = AutoModelForCausalLM.from_config(config)
@@ -289,7 +320,7 @@ def load_model(ckpt_path, vocab_size, vocab, device):
 # ──────────────────────────────────────────────
 # MIDI → 마디 토큰
 # ──────────────────────────────────────────────
-def midi_to_bar_tokens(midi_path, genre, VOCAB):
+def midi_to_bar_tokens(midi_path, genre, target_prog, VOCAB):
     pm          = pretty_midi.PrettyMIDI(midi_path)
     res         = pm.resolution
     timeline    = defaultdict(lambda: defaultdict(list))
@@ -337,28 +368,15 @@ def midi_to_bar_tokens(midi_path, genre, VOCAB):
             rel_tick       = pm.time_to_tick(n.start) - bar_start_tick
             time_tok       = VOCAB[f"TIME={min(95, rel_tick * 96 // (res * beats_per_bar))}"]
 
-            n_start_tick  = pm.time_to_tick(n.start)
-            is_phrase_end = (last_end_tick > 0 and
-                             (n_start_tick - last_end_tick) >= res)
-
-            nxt_start    = notes[i+1].start if i+1 < len(notes) else n.end + 1
-            legato_ratio = note_dur / max(nxt_start - n.start, 1e-6)
-            if dur_tick <= 2:          art_tok = VOCAB["ART_STACCATO"]
-            elif nxt_start == n.start: art_tok = VOCAB["ART_NORMAL"]
-            elif legato_ratio > 0.95:  art_tok = VOCAB["ART_LEGATO"]
-            else:                      art_tok = VOCAB["ART_NORMAL"]
-
-            expr_tok = VOCAB[f"EXPR_{min(31, n.velocity * 32 // 128)}"]
             vel_tok  = VOCAB[f"VEL={min(31, n.velocity * 32 // 128)}"]
             inst_tok = VOCAB[f"INST={p}"]
 
             timeline[bar_idx][p].append(
-                (time_tok, inst_tok, art_tok, expr_tok,
+                (time_tok, inst_tok,
                  n.pitch, dur_tick, vel_tok,
-                 meter_tok, key_tok, is_phrase_end))
-            last_end_tick = pm.time_to_tick(n.end)
+                 meter_tok, key_tok))
 
-    header      = [VOCAB["PIECE_START"], VOCAB[f"GENRE_{genre}"]]
+    header      = [VOCAB["PIECE_START"], VOCAB[f"GENRE_{genre}"], VOCAB.get(f"TARGET_{target_prog}", VOCAB.get(f"INST={target_prog}", 0))]
     final_beats = ts_changes[-1].numerator if ts_changes else 4
     max_bar     = int(pm.time_to_tick(pm.get_end_time()) // (res * final_beats))
 
@@ -390,13 +408,12 @@ def midi_to_bar_tokens(midi_path, genre, VOCAB):
             btoks = [VOCAB["BAR_START"], key_tok, meter_tok, VOCAB[f"DENSITY_{density}"]]
             all_notes = []
             for p in bar_data.keys():
-                for (tt, it, at, et, pitch, dt, vt, _, _, phrase_end) in bar_data[p]:
-                    all_notes.append((tt - VOCAB["TIME=0"], it, phrase_end,
-                                      it, at, et, tt, pitch, dt, vt))
+                for (tt, it, pitch, dt, vt, _, _) in bar_data[p]:
+                    all_notes.append((tt - VOCAB["TIME=0"], it,
+                                      it, tt, pitch, dt, vt))
             all_notes.sort(key=lambda x: (x[0], x[1]))
-            for (_, _, phrase_end, it, at, et, tt, pitch, dt, vt) in all_notes:
-                if phrase_end: btoks.append(VOCAB["PHRASE_END"])
-                btoks += [it, at, et, tt, VOCAB[f"PITCH={pitch}"],
+            for (_, _, it, tt, pitch, dt, vt) in all_notes:
+                btoks += [it, tt, VOCAB[f"PITCH={pitch}"],
                           VOCAB[f"DUR={dt}"], vt]
             btoks.append(VOCAB["BAR_END"])
         else:
@@ -462,7 +479,7 @@ def parse_bar_notes(bar_toks, VOCAB_R):
     for tok in bar_toks:
         name = VOCAB_R.get(tok, "")
         if in_header:
-            if name.startswith("INST=") or name == "PHRASE_END":
+            if name.startswith("INST="):
                 in_header = False
                 body.append(tok)
             elif name == "BAR_END":
@@ -477,20 +494,13 @@ def parse_bar_notes(bar_toks, VOCAB_R):
     i = 0
     while i < len(body):
         name = VOCAB_R.get(body[i], "")
-        prefix = []
-        if name == "PHRASE_END":
-            prefix = [body[i]]
-            i += 1
-            if i >= len(body):
-                break
-            name = VOCAB_R.get(body[i], "")
-        if name.startswith("INST=") and i + 7 <= len(body):
-            note_toks = prefix + body[i:i+7]
-            time_name = VOCAB_R.get(body[i+3], "")
+        if name.startswith("INST=") and i + 5 <= len(body):
+            note_toks = body[i:i+5]
+            time_name = VOCAB_R.get(body[i+1], "")
             time_val  = int(time_name.split("=")[1]) if time_name.startswith("TIME=") else 0
             inst_val  = int(name.split("=")[1])
             notes.append((time_val, inst_val, note_toks))
-            i += 7
+            i += 5
         else:
             i += 1
     return header, notes
@@ -538,7 +548,7 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
                              temperature, top_p,
                              VOCAB, VOCAB_R, source_pm, device,
                              monophonic=True, progress_hook=None):
-    SEQ_LEN  = 2048
+    SEQ_LEN  = 8192
     MAX_CTX  = SEQ_LEN - 300
     all_notes         = []
     gen_bar_tokens    = {}
@@ -549,7 +559,7 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
     target_past_ratio = context_bars / (context_bars + future_bars) if (context_bars + future_bars) > 0 else 0.5
     total_windows = (max_bar // window_bars) + 1
     last_reported_pct = 4  # 5부터 전송 시작하도록 초기화
-    
+
     logger.info(f"   총 {max_bar+1}마디 / 윈도우 {window_bars}마디 → {total_windows}번 생성")
     logger.info(f"   단선율 강제: {'ON' if monophonic else 'OFF (폴리포닉)'}")
 
@@ -575,10 +585,9 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
             if bar_toks:
                 past_bar_list.append((b, bar_toks))
 
-        # 3. Current Window (현재 작곡해야 할 구간의 원본)
+        # 3. Current Window (사용하지 않음 - 훈련 구조 반영)
         current_toks = []
-        for b in range(win_start, win_end + 1):
-            current_toks += bar_tokens.get(b, [])
+        # 원본 구조: current_toks += bar_tokens.get(b, [])
 
         # 4. Future (미래 가이드라인 원본)
         future_bar_list = []
@@ -601,14 +610,15 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
                 past_bar_list, future_bar_list,
                 h_len, c_len, MAX_CTX, target_past_ratio)
 
-        past_toks = []
+        past_toks = [VOCAB["<PRE>"]]
         for _, toks in past_bar_list:
             past_toks += toks
-        future_toks = []
+            
+        future_toks = [VOCAB["<SUF>"]]
         for _, toks in future_bar_list:
             future_toks += toks
 
-        context = header_toks + past_toks + current_toks + future_toks
+        context = header_toks + past_toks + future_toks + [VOCAB["<MID>"]]
         input_ids = torch.tensor([context], dtype=torch.long, device=device)
         gen_toks  = []
 
@@ -849,25 +859,25 @@ def save_midi(notes, source_pm, output_path, target_prog, target_name,
     """
     if not original_song_path:
         raise ValueError("original_song_path is required for Mido Append strategy")
-        
+
     import mido
     mid = mido.MidiFile(original_song_path)
-    
+
     if mid.type == 0:
         mid.type = 1
 
     display_name = actual_instrument_name or target_name
     new_track = mido.MidiTrack()
     new_track.append(mido.MetaMessage('track_name', name=f"AI_{display_name}", time=0))
-    
+
     is_drum = (target_prog == 128)
     if is_drum:
         msg_prog = 0
     else:
         msg_prog = actual_midi_program if actual_midi_program is not None else target_prog
-    
+
     msg_prog = max(0, min(127, msg_prog))
-    
+
     if is_drum:
         msg_chan = 9  # 드럼 채널 설정
     else:
@@ -876,7 +886,7 @@ def save_midi(notes, source_pm, output_path, target_prog, target_name,
             for msg in track:
                 if hasattr(msg, 'channel'):
                     used_channels.add(msg.channel)
-        
+
         free_channels = [c for c in range(16) if c != 9 and c not in used_channels]
         if free_channels:
             msg_chan = free_channels[0]
@@ -884,30 +894,30 @@ def save_midi(notes, source_pm, output_path, target_prog, target_name,
             fallback = [c for c in range(16) if c != 9]
             msg_chan = fallback[0] if fallback else 0
             logger.warning(f"MIDI 채널 포화 상태. AI 악기가 채널 {msg_chan}을 일부 공유합니다.")
-            
+
     new_track.append(mido.Message('program_change', program=msg_prog, channel=msg_chan, time=0))
-    
+
     events = []
     for n in notes:
         st_tick = int(round(source_pm.time_to_tick(n["start"])))
         en_tick = int(round(source_pm.time_to_tick(n["end"])))
         pitch = max(0, min(127, int(n["pitch"])))
         vel = max(1, min(127, int(n["velocity"])))
-        
+
         events.append((st_tick, 'note_on', pitch, vel))
         events.append((en_tick, 'note_off', pitch, 0))
-        
+
     events.sort(key=lambda x: (x[0], 0 if x[1] == 'note_off' else 1))
-    
+
     last_tick = 0
     for tick, msg_type, pitch, vel in events:
         delta = max(0, tick - last_tick)
         new_track.append(mido.Message(msg_type, note=pitch, velocity=vel, time=delta, channel=msg_chan))
         last_tick = tick
-        
+
     new_track.append(mido.MetaMessage('end_of_track', time=0))
     mid.tracks.append(new_track)
-    
+
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     mid.save(output_path)
     logger.info(f"✅ 원본 보존 기반 병합 저장 완료: {output_path} (생성된 노트 {len(notes)}개)")
@@ -932,8 +942,8 @@ def run_arrangement(
     """편곡 추론 실행 - 외부에서 호출되는 API 엔트리포인트."""
     # 고정 하이퍼파라미터 (2-2-2 셋업 반영)
     context_bars = 8
-    window_bars = 4
-    future_bars = 0
+    window_bars = 8
+    future_bars = 8
     top_p = 0.95
     seed = 42
 
@@ -970,12 +980,12 @@ def run_arrangement(
             if pitch_max is None: pitch_max = 127
 
     logger.info(f"입력 MIDI 토크나이징: {song_path}")
-    header, bar_tokens, max_bar, source_pm = midi_to_bar_tokens(song_path, genre, vocab)
+    header, bar_tokens, max_bar, source_pm = midi_to_bar_tokens(song_path, genre, target_prog, vocab)
     logger.info(f"총 마디 수: {max_bar + 1}")
 
     logger.info(f"생성 시작 (target_prog={target_prog}, name={target_name}, "
                 f"genre={genre}, temp={temperature}, monophonic={monophonic})")
-                
+
     all_notes = generate_sliding_window(
         model, header, bar_tokens, max_bar,
         target_prog, pitch_min, pitch_max,
@@ -990,14 +1000,14 @@ def run_arrangement(
         progress_hook(95)
 
     logger.info(f"디코딩 노트: {len(all_notes)}")
-    
+
     if target_prog != 128:
         all_notes = postprocess(all_notes, target_name, monophonic=monophonic)
     else:
         # 드럼 전용 간단 후처리
         all_notes = [n for n in all_notes if pitch_min <= n["pitch"] <= pitch_max]
         all_notes = [n for n in all_notes if (n["end"] - n["start"]) >= 0.05]
-        
+
     logger.info(f"후처리 후: {len(all_notes)}")
 
     if progress_hook is not None:

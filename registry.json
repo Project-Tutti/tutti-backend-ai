@@ -21,6 +21,14 @@
       "name": "Tutti Unified v3",
       "path": "v3_260422",
       "description": "Qwen2.5-0.5B 기반 128그룹 통합 모델(vocab 682) LMD_pretrain",
+      "active": false
+    },
+    {
+      "_comment": "단순 새로운 모델 이용을 위해서 잠시 수정",
+      "type": "qwen2.5",
+      "name": "Tutti Unified v4",
+      "path": "/data2/tutti/Qwen_Checkpoints/checkpoint-65000",
+      "description": "Qwen2.5-0.5B 기반 128그룹 통합 및 윈도우 길이 확장 모델(vocab 645) LMD_pretrain",
       "active": true
     }
   ]
