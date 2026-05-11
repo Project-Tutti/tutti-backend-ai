@@ -589,21 +589,27 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
         current_toks = []
         # 원본 구조: current_toks += bar_tokens.get(b, [])
 
-        # 4. Future (미래 가이드라인 원본)
+        # 4. Future (현재 마디 반주 + 미래 반주)
         future_bar_list = []
-        for b in range(win_end + 1, fut_end + 1):
+        curr_acc_len = 0
+        true_fut_len = 0
+        for b in range(win_start, fut_end + 1):
             bar_toks = list(bar_tokens.get(b, []))
             if bar_toks:
                 future_bar_list.append((b, bar_toks))
+                if win_start <= b <= win_end:
+                    curr_acc_len += len(bar_toks)
+                else:
+                    true_fut_len += len(bar_toks)
 
         h_len = len(header_toks)
         p_len = sum(len(t) for _, t in past_bar_list)
-        c_len = len(current_toks)
-        f_len = sum(len(t) for _, t in future_bar_list)
+        c_len = curr_acc_len  # 로그 가시성을 위해 현재 반주 길이로 할당
+        f_len = true_fut_len  # 순수 미래 문맥 길이
         total_len = h_len + p_len + c_len + f_len
 
         logger.info(f"   --- WINDOW #{win_idx} (Bar {win_start}~{win_end}) ---")
-        logger.info(f"   ● [Context] Past: {p_len} | Current: {c_len} | Future: {f_len} -> Total: {total_len}/{SEQ_LEN}")
+        logger.info(f"   ● [Context] Past: {p_len} | Curr_Acc: {c_len} | Future: {f_len} -> Total: {total_len}/{SEQ_LEN}")
 
         if total_len > MAX_CTX:
             past_bar_list, future_bar_list = trim_bars_preserving_ratio(
