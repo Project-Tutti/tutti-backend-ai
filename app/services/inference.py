@@ -698,13 +698,13 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
         cur_bar_num  = win_start
         for tok in gen_toks:
             if VOCAB_R.get(tok, "") == "BAR_START":
-                if cur_bar_toks:
+                if cur_bar_toks and cur_bar_num <= win_end:
                     gen_bar_tokens[cur_bar_num] = cur_bar_toks
                     cur_bar_num += 1
                 cur_bar_toks = [tok]
             else:
                 cur_bar_toks.append(tok)
-        if cur_bar_toks:
+        if cur_bar_toks and cur_bar_num <= win_end:
             gen_bar_tokens[cur_bar_num] = cur_bar_toks
 
         win_notes = decode_tokens(gen_toks, source_pm, target_prog,
@@ -830,18 +830,11 @@ def postprocess(notes, target_name, monophonic=True):
         if 0 < gap < LEGATO_GAP:
             notes[i]["end"] = notes[i+1]["start"]
 
-    # 6. 단선율 악기만: 큰 도약 완화
-    if monophonic:
-        MAX_INTERVAL = 12
-        notes = sorted(notes, key=lambda x: x["start"])
-        for i in range(1, len(notes)):
-            interval = notes[i]["pitch"] - notes[i-1]["pitch"]
-            if abs(interval) > MAX_INTERVAL:
-                if interval > 0: notes[i]["pitch"] -= 12
-                else:            notes[i]["pitch"] += 12
-                if not (cfg["pitch_min"] <= notes[i]["pitch"] <= cfg["pitch_max"]):
-                    if interval > 0: notes[i]["pitch"] += 12
-                    else:            notes[i]["pitch"] -= 12
+    # 6. (제거됨) 큰 도약 완화
+    # 연쇄 왜곡(cascading distortion) 문제로 제거.
+    # 수정된 notes[i]가 다음 반복의 기준점이 되어 멜로디 윤곽을 파괴함.
+    # 모델이 추론 시 pitch masking(L641-644)을 적용받아 극단적 도약이 드물고,
+    # Step 7의 최종 음역 필터가 안전장치로 기능함.
 
     # 7. 최종 음역 재확인
     notes = [n for n in notes
