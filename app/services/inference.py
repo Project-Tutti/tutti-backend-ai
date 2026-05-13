@@ -252,7 +252,8 @@ def load_model(ckpt_path, vocab_size, vocab, device):
     config = AutoConfig.from_pretrained(MODEL_NAME)
     config.vocab_size              = vocab_size
     config.pad_token_id            = vocab["PAD"]
-    config.max_position_embeddings = 2048
+    # max_position_embeddings는 입력 프롬프트 + 생성 토큰의 최대 길이
+    config.max_position_embeddings = 128000
     config.sliding_window          = None
 
     model = AutoModelForCausalLM.from_config(config)
@@ -299,6 +300,28 @@ def midi_to_bar_tokens(midi_path, genre, VOCAB):
     ts_times    = [t.time for t in ts_changes]
     tempo_times, tempos = pm.get_tempo_changes()
 
+    # ── 변박(Meter Change) 완벽 대응을 위한 마디별 누적 시작 틱 사전 계산 ──
+    end_tick = pm.time_to_tick(pm.get_end_time())
+    bar_start_ticks = [0]
+    acc = 0
+    # 끝 틱을 넘어서까지 충분히 매핑 생성
+    while acc < end_tick or len(bar_start_ticks) < 10:
+        bt = pm.tick_to_time(acc)
+        ts_idx = max(0, bisect.bisect_right(ts_times, bt) - 1)
+        bpb = ts_changes[ts_idx].numerator if ts_idx < len(ts_changes) else 4
+        acc += res * bpb
+        bar_start_ticks.append(acc)
+    
+    # 여유분 추가 확보
+    for _ in range(5):
+        bt = pm.tick_to_time(acc)
+        ts_idx = max(0, bisect.bisect_right(ts_times, bt) - 1)
+        bpb = ts_changes[ts_idx].numerator if ts_idx < len(ts_changes) else 4
+        acc += res * bpb
+        bar_start_ticks.append(acc)
+
+    max_bar = max(0, bisect.bisect_right(bar_start_ticks, end_tick) - 1)
+
     for inst in pm.instruments:
         p     = 128 if inst.is_drum else inst.program
         notes = sorted(inst.notes, key=lambda x: (x.start, x.pitch))
@@ -313,13 +336,11 @@ def midi_to_bar_tokens(midi_path, genre, VOCAB):
 
             ts_idx = max(0, bisect.bisect_right(ts_times, n.start) - 1)
             if ts_idx < len(ts_changes):
-                ts            = ts_changes[ts_idx]
-                mkey          = f"{ts.numerator}:{ts.denominator}"
-                meter_tok     = VOCAB.get(f"METER_{mkey}", VOCAB["METER_OTHER"])
-                beats_per_bar = ts.numerator
+                ts        = ts_changes[ts_idx]
+                mkey      = f"{ts.numerator}:{ts.denominator}"
+                meter_tok = VOCAB.get(f"METER_{mkey}", VOCAB["METER_OTHER"])
             else:
-                meter_tok     = VOCAB["METER_OTHER"]
-                beats_per_bar = 4
+                meter_tok = VOCAB["METER_OTHER"]
 
             k_idx = bisect.bisect_right(key_times, n.start) - 1
             if 0 <= k_idx < len(key_changes):
@@ -332,10 +353,15 @@ def midi_to_bar_tokens(midi_path, genre, VOCAB):
             else:
                 key_tok = VOCAB["KEY_NONE"]
 
-            bar_idx        = int(pm.time_to_tick(n.start) // (res * beats_per_bar))
-            bar_start_tick = bar_idx * res * beats_per_bar
-            rel_tick       = pm.time_to_tick(n.start) - bar_start_tick
-            time_tok       = VOCAB[f"TIME={min(95, rel_tick * 96 // (res * beats_per_bar))}"]
+            # ── 이진 탐색 기반 무결점 마디 매핑 및 정박자 스케일링 ──
+            note_tick = pm.time_to_tick(n.start)
+            bar_idx = max(0, bisect.bisect_right(bar_start_ticks, note_tick) - 1)
+            bar_start_tick = bar_start_ticks[bar_idx]
+            bar_end_tick   = bar_start_ticks[bar_idx + 1]
+            current_bar_ticks = bar_end_tick - bar_start_tick
+
+            rel_tick = note_tick - bar_start_tick
+            time_tok = VOCAB[f"TIME={min(95, max(0, int(rel_tick * 96 // current_bar_ticks)))}"]
 
             n_start_tick  = pm.time_to_tick(n.start)
             is_phrase_end = (last_end_tick > 0 and
@@ -358,16 +384,13 @@ def midi_to_bar_tokens(midi_path, genre, VOCAB):
                  meter_tok, key_tok, is_phrase_end))
             last_end_tick = pm.time_to_tick(n.end)
 
-    header      = [VOCAB["PIECE_START"], VOCAB[f"GENRE_{genre}"]]
-    final_beats = ts_changes[-1].numerator if ts_changes else 4
-    max_bar     = int(pm.time_to_tick(pm.get_end_time()) // (res * final_beats))
+    header = [VOCAB["PIECE_START"], VOCAB[f"GENRE_{genre}"]]
 
-    bar_tokens        = {}
-    accumulated_ticks = 0
+    bar_tokens = {}
     for bar_idx in range(max_bar + 1):
-        bar_time  = pm.tick_to_time(accumulated_ticks)
+        bar_start_tick = bar_start_ticks[bar_idx]
+        bar_time  = pm.tick_to_time(bar_start_tick)
         ts_idx    = max(0, bisect.bisect_right(ts_times, bar_time) - 1)
-        beats     = ts_changes[ts_idx].numerator if ts_idx < len(ts_changes) else 4
         mkey      = (f"{ts_changes[ts_idx].numerator}:{ts_changes[ts_idx].denominator}"
                      if ts_idx < len(ts_changes) else "OTHER")
         meter_tok = VOCAB.get(f"METER_{mkey}", VOCAB["METER_OTHER"])
@@ -403,8 +426,7 @@ def midi_to_bar_tokens(midi_path, genre, VOCAB):
             btoks = [VOCAB["BAR_START"], key_tok, meter_tok,
                      VOCAB["DENSITY_1"], VOCAB["BAR_END"]]
 
-        bar_tokens[bar_idx]    = btoks
-        accumulated_ticks     += res * beats
+        bar_tokens[bar_idx] = btoks
 
     return header, bar_tokens, max_bar, pm
 
@@ -538,8 +560,8 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
                              temperature, top_p,
                              VOCAB, VOCAB_R, source_pm, device,
                              monophonic=True, progress_hook=None):
-    SEQ_LEN  = 2048
-    MAX_CTX  = SEQ_LEN - 300
+    SEQ_LEN  = 128000
+    MAX_CTX  = SEQ_LEN - 8192
     all_notes         = []
     gen_bar_tokens    = {}
 
@@ -609,6 +631,8 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
             future_toks += toks
 
         context = header_toks + past_toks + current_toks + future_toks
+        if total_len > MAX_CTX:
+            logger.info(f"   ✂️ 문맥 길이 초과로 트리밍 적용: 최종 프롬프트 길이 {len(context)}/{MAX_CTX}")
         input_ids = torch.tensor([context], dtype=torch.long, device=device)
         gen_toks  = []
 
@@ -775,7 +799,7 @@ def decode_tokens(tokens, source_pm, target_prog,
 
 # ──────────────────────────────────────────────
 # 후처리
-# monophonic=True  → 겹침 제거 + 도약 완화 적용
+# monophonic=True  → 겹침 제거 O + 도약 완화 적용 X
 # monophonic=False → 겹침 제거만 생략 (폴리포닉 허용)
 # ──────────────────────────────────────────────
 def postprocess(notes, target_name, monophonic=True):
@@ -814,18 +838,19 @@ def postprocess(notes, target_name, monophonic=True):
         if 0 < gap < LEGATO_GAP:
             notes[i]["end"] = notes[i+1]["start"]
 
-    # 6. 단선율 악기만: 큰 도약 완화
-    if monophonic:
-        MAX_INTERVAL = 12
-        notes = sorted(notes, key=lambda x: x["start"])
-        for i in range(1, len(notes)):
-            interval = notes[i]["pitch"] - notes[i-1]["pitch"]
-            if abs(interval) > MAX_INTERVAL:
-                if interval > 0: notes[i]["pitch"] -= 12
-                else:            notes[i]["pitch"] += 12
-                if not (cfg["pitch_min"] <= notes[i]["pitch"] <= cfg["pitch_max"]):
-                    if interval > 0: notes[i]["pitch"] += 12
-                    else:            notes[i]["pitch"] -= 12
+    # 도약 완화 코드 주석처리
+    # # 6. 단선율 악기만: 큰 도약 완화
+    # if monophonic:
+    #     MAX_INTERVAL = 12
+    #     notes = sorted(notes, key=lambda x: x["start"])
+    #     for i in range(1, len(notes)):
+    #         interval = notes[i]["pitch"] - notes[i-1]["pitch"]
+    #         if abs(interval) > MAX_INTERVAL:
+    #             if interval > 0: notes[i]["pitch"] -= 12
+    #             else:            notes[i]["pitch"] += 12
+    #             if not (cfg["pitch_min"] <= notes[i]["pitch"] <= cfg["pitch_max"]):
+    #                 if interval > 0: notes[i]["pitch"] += 12
+    #                 else:            notes[i]["pitch"] -= 12
 
     # 7. 최종 음역 재확인
     notes = [n for n in notes
