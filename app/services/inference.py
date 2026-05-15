@@ -275,7 +275,7 @@ def load_model(ckpt_path, vocab_size, vocab, device):
     else:
         raise FileNotFoundError(f"❌ 체크포인트 없음: {ckpt_path}")
 
-    model.config.use_cache = False
+    model.config.use_cache = True
     model.eval()
     model.to(_device)
 
@@ -561,7 +561,7 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
                              VOCAB, VOCAB_R, source_pm, device,
                              monophonic=True, progress_hook=None):
     SEQ_LEN  = 128000
-    MAX_CTX  = SEQ_LEN - 8192
+    MAX_CTX  = SEQ_LEN - 119808
     all_notes         = []
     gen_bar_tokens    = {}
 
@@ -637,23 +637,46 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
         gen_toks  = []
 
         with torch.no_grad():
-            out = model(input_ids=input_ids, use_cache=True)
-            pkv = out.past_key_values
+            # --- 수정 후: 마디 헤더(KEY, METER, DENSITY)를 포함하여 강제 주입 ---
+            first_bar = bar_tokens.get(win_start, [])
+            injected = [VOCAB["BAR_START"]]
+            for t in first_bar:
+                name = VOCAB_R.get(t, "")
+                if any(name.startswith(p) for p in ["KEY_", "METER_", "DENSITY_"]):
+                    injected.append(t)
+            injected.append(INST_TARGET_ID)
 
-            for tok in [VOCAB["BAR_START"], INST_TARGET_ID]:
-                t_in = torch.tensor([[tok]], dtype=torch.long, device=device)
-                out  = model(input_ids=t_in, past_key_values=pkv, use_cache=True)
-                pkv  = out.past_key_values
-                gen_toks.append(tok)
+            forced_tokens = torch.tensor([injected], dtype=torch.long, device=device)
+            combined_input = torch.cat([input_ids, forced_tokens], dim=1) # (1, N) + (1, K) -> (1, N+K)
+
+            # 2. 모델을 딱 한 번만 실행합니다. (Prefill을 한 방에 처리)
+            out = model(input_ids=combined_input, use_cache=True)
+            pkv = out.past_key_values
+            # [중요] Prefill의 마지막 결과물을 첫 번째 루프의 입력으로 예약
+            logits = out.logits[0, -1, :].float()
+                
+            # 3. 생성 기록(gen_toks) 업데이트
+            gen_toks.extend(injected)
+                
 
             bar_count      = 1
             target_playing = True   # 첫 INST 강제 주입 후 발음 중
-            cur_in = torch.tensor([[gen_toks[-1]]], dtype=torch.long, device=device)
 
-            for step in range(1024):
+            # 1x1 크기의 텐서를 미리 딱 한 번만 만들어둡니다.
+            cur_in = torch.zeros((1, 1), dtype=torch.long, device=device)
+
+            # 루프 진입 전 마지막 토큰으로 초기값 설정
+            cur_in[0, 0] = gen_toks[-1] 
+
+            # (이전 답변에서 추가한 피치 마스킹용 텐서들도 이 위치에 배치됨)
+            pitch_token_ids = torch.tensor([VOCAB[f"PITCH={p}"] for p in range(128)], device=device)
+            invalid_pitch_mask = (torch.arange(128, device=device) < pitch_min) | (torch.arange(128, device=device) > pitch_max)
+            invalid_pitch_token_ids = pitch_token_ids[invalid_pitch_mask]
+
+            for step in range(512):
                 # ── 1% 단위 진행도 보간 (추론 로직 무관) ──
                 if progress_hook is not None:
-                    pct = int(5 + ((win_idx + step / 1024) / total_windows) * 90)
+                    pct = int(5 + ((win_idx + step / 512) / total_windows) * 90)
                     if pct > last_reported_pct:
                         last_reported_pct = pct
                         progress_hook(pct)
@@ -662,10 +685,13 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
                 pkv    = out.past_key_values
                 logits = out.logits[0, -1, :].float()
 
-                # 1. pitch 음역 마스킹
-                for pitch in range(128):
-                    if pitch < pitch_min or pitch > pitch_max:
-                        logits[VOCAB[f"PITCH={pitch}"]] = -1e9
+                # 1. pitch 음역 마스킹 : 현재 속도 저하의 주범 (이 작업이 CPU로 돌고 있음)
+                # for pitch in range(128):
+                #     if pitch < pitch_min or pitch > pitch_max:
+                #         logits[VOCAB[f"PITCH={pitch}"]] = -1e9
+                
+                # 수정된 피치 마스킹 (미리 계산된 마스크 사용)
+                logits[invalid_pitch_token_ids] = -1e9
 
                 # 2. 단선율 강제 (monophonic=True일 때만)
                 if monophonic and target_playing:
@@ -699,7 +725,11 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
                 if next_tok in (VOCAB["PIECE_END"], VOCAB["EOS"]):
                     break
 
-                cur_in = torch.tensor([[next_tok]], dtype=torch.long, device=device)
+                # 루프 내 텐서 생성 금지(이미 만들어온 텐서 로드로 수정)     
+                # cur_in = torch.tensor([[next_tok]], dtype=torch.long, device=device)
+                
+                # (수정) 새로운 텐서를 만들지 않고, 미리 만든 바구니에 숫자만 갈아끼기
+                cur_in[0, 0] = next_tok
 
         # 생성 토큰 마디별 분리
         cur_bar_toks = []
@@ -959,8 +989,10 @@ def run_arrangement(
     context_bars = 8
     window_bars = 4
     future_bars = 0
-    top_p = 0.95
-    seed = 42
+    top_p = 0.90
+    # seed = 42
+    # 고정 시드 해제: 매번 다채로운 생성을 위해 무작위 시드 부여(non-deterministic)
+    seed = random.randint(0, 2147483647)
 
     if not os.path.exists(song_path):
         raise FileNotFoundError(f"입력 파일 없음: {song_path}")
