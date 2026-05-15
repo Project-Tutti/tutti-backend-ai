@@ -29,7 +29,7 @@ Redis Stream(ai:arrange:stream)에서 Consumer Group으로 작업을 소비하�
     REDIS_HOST      — Redis 호스트 (default: localhost)
     REDIS_PORT      — Redis 포트 (default: 6379)
     REDIS_PASSWORD  — Redis 비밀번호
-    REDIS_TLS       — TLS 사용 여부 (default: false)
+    REDIS_TLS       — TLS 사용 여부 (default: false, GKE 내부 Redis는 false)
 """
 
 import os
@@ -64,7 +64,7 @@ STREAM_KEY = "ai:arrange:stream"
 GROUP_NAME = "arrange-workers"
 CONSUMER_NAME = f"{socket.gethostname()}-{os.getpid()}"
 
-POLL_INTERVAL_SEC = 10                   # 새 메시지 폴링 간격 (Upstash 무료 500K cmd/월 고려)
+POLL_INTERVAL_SEC = 1                    # BLOCK 모드 fallback용 (에러 시에만 사용)
 PENDING_CLAIM_MIN_MS = 10 * 60 * 1000    # 10분: XCLAIM 임계값 (정상 인퍼런스가 뺏기지 않도록 여유 확보)
 
 # 콜백 지수 백오프 (중요 콜백: 완료/실패)
@@ -441,8 +441,8 @@ def process_job(
 class RedisStreamConsumer:
     """Redis Streams Consumer Group 기반 메시지 소비자.
 
-    Upstash 서버리스 제약:
-      - BLOCK 옵션 사용 불가 → 논블로킹 + time.sleep() 폴링
+    GKE 내부 Redis 사용:
+      - BLOCK 옵션으로 즉시 메시지 수신 (폴링 오버헤드 제거)
       - XREADGROUP, XACK, XPENDING, XCLAIM 모두 정상 지원
     """
 
@@ -535,18 +535,21 @@ class RedisStreamConsumer:
             return []
 
     def fetch_job(self):
-        """새 메시지 1개 가져오기 (논블로킹).
+        """새 메시지 1개 가져오기 (5초 블로킹).
+
+        메시지가 있으면 즉시 반환, 없으면 최대 5초 대기 후 None 반환.
+        GKE 내부 Redis에서 BLOCK 옵션을 사용하여 폴링 오버헤드를 제거합니다.
 
         Returns:
             (msg_id, fields_dict) 또는 None
         """
         try:
-            # BLOCK 옵션 없이 호출 → Upstash 호환
             result = self._redis.xreadgroup(
                 GROUP_NAME,
                 self._consumer,
                 {STREAM_KEY: ">"},
                 count=1,
+                block=5000,  # 5초 블로킹 — 메시지 즉시 수신 + 유휴 시 5초 대기
             )
 
             if not result:
