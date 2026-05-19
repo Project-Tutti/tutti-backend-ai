@@ -80,6 +80,8 @@ services:
     volumes:
       - ./models:/models:ro
       - ai-results:/tmp/results
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     deploy:
       resources:
         reservations:
@@ -112,6 +114,8 @@ services:
     volumes:
       - ./models:/models:ro
       - ai-results:/tmp/results
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     deploy:
       resources:
         reservations:
