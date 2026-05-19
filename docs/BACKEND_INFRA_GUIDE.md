@@ -27,7 +27,7 @@ Tutti AI Server는 **Redis Streams를 매개체로 하는 100% 비동기 워커(
 
 ```
 ┌────────────┐     XADD (JSON Payload)       ┌───────────────────┐
-│ Main Server│ ────────────────────────────→ │ Upstash Redis     │
+│ Main Server│ ────────────────────────────→ │ GKE Redis         │
 │ (Spring)   │ ←── HTTP Callback (Result) ─  │                   │
 └────────────┘                               └─────────┬─────────┘
                                                        │ XREADGROUP
@@ -105,7 +105,7 @@ Tutti AI Server는 **Redis Streams를 매개체로 하는 100% 비동기 워커(
 
 | 환경 변수 | 의미 |
 |-----------|------|
-| `REDIS_HOST` | Upstash 등 Redis 엔드포인트 도메인 |
+| `REDIS_HOST` | GKE 내부 Redis 주소 (온프레미스: `localhost` via CF Tunnel TCP) |
 | `REDIS_PASSWORD` | 인가용 패스워드 |
 | `REDIS_TLS` | SSL 연결 강제 (`true` 필수 권장) |
 | `AI_SERVER_API_KEY` | 모델 헬스체크 및 내부 보안 통신용 여분 키 |

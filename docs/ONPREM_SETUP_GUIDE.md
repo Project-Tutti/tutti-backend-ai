@@ -185,12 +185,14 @@ nano .env
 ```env
 GCP_PROJECT_ID=여기에값입력
 AI_SERVER_API_KEY=콜백인증키
-REDIS_HOST=xxx.upstash.io
-REDIS_PORT=6379
+REDIS_HOST=localhost
+REDIS_PORT=6380
 REDIS_PASSWORD=xxx...
-REDIS_TLS=true
+REDIS_TLS=false
 LOG_LEVEL=info
 ```
+
+> **Note**: `REDIS_HOST=localhost`, `REDIS_PORT=6380`은 온프레미스 서버에서 `cloudflared access tcp`가 GKE 내부 Redis를 `localhost:6380`으로 프록시하기 때문입니다.
 
 ### 6.3 서비스 시작
 
@@ -249,8 +251,11 @@ sudo systemctl restart docker
 # 워커 로그 확인 (Redis 연결 실패 시 Traceback 출력됨)
 docker compose logs ai-worker | grep "Redis"
 
-# REDIS_TLS=true 여부 점검 (Upstash 사용 시 필수)
-cat .env | grep REDIS_TLS
+# Redis 연결 확인 (Cloudflare Tunnel TCP 프록시 상태)
+redis-cli -h localhost -p 6380 -a <password> ping
+
+# cloudflared TCP 프록시 서비스 상태 확인
+sudo systemctl status cloudflared-redis
 ```
 
 ### 메모리 부족 (OOM)

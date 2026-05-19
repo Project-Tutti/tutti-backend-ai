@@ -9,7 +9,7 @@
 ```mermaid
 graph TD
     subgraph Spring Boot (Main Backend)
-        API[Client API] -->|1. LPUSH / XADD| Redis[(Upstash Redis Streams)]
+        API[Client API] -->|1. LPUSH / XADD| Redis[(GKE Redis Streams)]
         CallbackEndpoint[HTTP Callback Receiver]
     end
 
