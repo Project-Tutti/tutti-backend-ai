@@ -290,6 +290,8 @@ def process_job(
     job_data: dict,
     registry: ModelRegistry,
     callback: CallbackClient,
+    redis_client: redis.Redis = None,
+    msg_id: str = None
 ) -> bool:
     """단일 편곡 작업 처리.
 
@@ -320,13 +322,22 @@ def process_job(
         p.update(extra)
         return p
 
+    def touch_heartbeat():
+        if redis_client and msg_id:
+            try:
+                redis_client.set(f"job:heartbeat:{msg_id}", CONSUMER_NAME, ex=180)
+            except Exception:
+                pass
+
     try:
         # ── Step 1: MIDI 다운로드 (1% → 3%) ──────────────────────
         logger.info(f"[{job_id}] Step 1/4: MIDI 다운로드")
         callback.send_progress(cb_url, cb_secret, _payload("processing", 1))
+        touch_heartbeat()
         
         midi_path = _download_midi_sync(job_data["midiFilePath"])
         callback.send_progress(cb_url, cb_secret, _payload("processing", 3))
+        touch_heartbeat()
 
         # ── Step 2: 트랙 재매핑 검증 및 전처리 (5%) ────────────────
         logger.info(f"[{job_id}] Step 2/4: 트랙 재매핑 검증")
@@ -348,6 +359,7 @@ def process_job(
             inference_path = mapped_midi_path
 
         callback.send_progress(cb_url, cb_secret, _payload("processing", 5))
+        touch_heartbeat()
 
         # ── Step 3: 추론 (5% → 97%) ────────────────────────
         target_prog = int(job_data["targetInstrumentId"])
@@ -369,6 +381,7 @@ def process_job(
             callback.send_progress(
                 cb_url, cb_secret, _payload("processing", pct)
             )
+            touch_heartbeat()
 
         target_midi_program_raw = job_data.get("targetMidiProgram")
         target_midi_program = None
@@ -397,6 +410,7 @@ def process_job(
         )
 
         callback.send_progress(cb_url, cb_secret, _payload("processing", 97))
+        touch_heartbeat()
 
         # ── Step 4: 완료 콜백 (100%) ─────────────────────────
         logger.info(f"[{job_id}] Step 4/4: 결과 MIDI 전송")
@@ -504,6 +518,11 @@ class RedisStreamConsumer:
 
                 msg_id = entry["message_id"]
                 original_consumer = entry.get("consumer", "unknown")
+
+                # ── Heartbeat 검증 (1번 패턴) ──
+                if self._redis.exists(f"job:heartbeat:{msg_id}"):
+                    logger.info(f"[{msg_id}] 10분 초과(idle_ms={idle_ms})지만 Heartbeat 존재. 강제 회수 취소.")
+                    continue
 
                 # XCLAIM: 이 Consumer가 소유권 인수
                 claimed = self._redis.xclaim(
@@ -632,7 +651,7 @@ def _handle_message(
         return
 
     # 작업 처리 (성공/실패 모두 True 반환)
-    process_job(job_data, registry, callback)
+    process_job(job_data, registry, callback, consumer._redis, msg_id)
 
     # 콜백까지 완료된 후에만 ACK
     consumer.ack(msg_id)
