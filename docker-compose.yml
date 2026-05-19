@@ -25,6 +25,14 @@ services:
       replicas: 0
     restart: unless-stopped
 
+  # ── Cloudflare TCP Proxy: 내부망 Redis 터널링 ──
+  redis-proxy:
+    image: cloudflare/cloudflared:latest
+    command: access tcp --hostname redis.tutti.asia --url 0.0.0.0:6380 --service-token-id ${CLIENT_ID} --service-token-secret ${CLIENT_SECRET}
+    expose:
+      - "6380"
+    restart: unless-stopped
+
   # ── Nginx: 로드밸런서 (라운드로빈) ──
   nginx:
     image: nginx:alpine
@@ -80,8 +88,8 @@ services:
     volumes:
       - ./models:/models:ro
       - ai-results:/tmp/results
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redis-proxy
     deploy:
       resources:
         reservations:
@@ -114,8 +122,8 @@ services:
     volumes:
       - ./models:/models:ro
       - ai-results:/tmp/results
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redis-proxy
     deploy:
       resources:
         reservations:

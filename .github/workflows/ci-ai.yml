@@ -91,6 +91,8 @@ jobs:
           REDIS_PORT: ${{ secrets.REDIS_PORT }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
           REDIS_TLS: ${{ secrets.REDIS_TLS }}
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
         run: |
           cd ~/tutti-backend-ai
 
@@ -118,6 +120,8 @@ jobs:
           echo "REDIS_PORT=${REDIS_PORT:-6379}" >> .env
           echo "REDIS_PASSWORD=${REDIS_PASSWORD}" >> .env
           echo "REDIS_TLS=${REDIS_TLS:-false}" >> .env
+          echo "CLIENT_ID=${CLIENT_ID}" >> .env
+          echo "CLIENT_SECRET=${CLIENT_SECRET}" >> .env
 
           echo "📦 3. Pulling latest artifacts..."
           docker compose pull
