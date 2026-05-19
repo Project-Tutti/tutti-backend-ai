@@ -321,13 +321,14 @@ def process_job(
         return p
 
     try:
-        # ── Step 1: MIDI 다운로드 (10%) ──────────────────────
+        # ── Step 1: MIDI 다운로드 (1% → 3%) ──────────────────────
         logger.info(f"[{job_id}] Step 1/4: MIDI 다운로드")
+        callback.send_progress(cb_url, cb_secret, _payload("processing", 1))
+        
         midi_path = _download_midi_sync(job_data["midiFilePath"])
+        callback.send_progress(cb_url, cb_secret, _payload("processing", 3))
 
-        callback.send_progress(cb_url, cb_secret, _payload("processing", 10))
-
-        # ── Step 2: 트랙 재매핑 검증 및 전처리 (20%) ────────────────
+        # ── Step 2: 트랙 재매핑 검증 및 전처리 (5%) ────────────────
         logger.info(f"[{job_id}] Step 2/4: 트랙 재매핑 검증")
         mappings = [Mapping(**m) for m in job_data.get("mappings", [])]
         
@@ -346,9 +347,9 @@ def process_job(
             remap_original_tracks(mapped_midi_path, mappings)
             inference_path = mapped_midi_path
 
-        callback.send_progress(cb_url, cb_secret, _payload("processing", 20))
+        callback.send_progress(cb_url, cb_secret, _payload("processing", 5))
 
-        # ── Step 3: 추론 (20% → 80%) ────────────────────────
+        # ── Step 3: 추론 (5% → 97%) ────────────────────────
         target_prog = int(job_data["targetInstrumentId"])
         loaded = registry.get_model(job_data.get("modelType"))
 
@@ -395,7 +396,7 @@ def process_job(
             actual_midi_program=target_midi_program,
         )
 
-        callback.send_progress(cb_url, cb_secret, _payload("processing", 80))
+        callback.send_progress(cb_url, cb_secret, _payload("processing", 97))
 
         # ── Step 4: 완료 콜백 (100%) ─────────────────────────
         logger.info(f"[{job_id}] Step 4/4: 결과 MIDI 전송")

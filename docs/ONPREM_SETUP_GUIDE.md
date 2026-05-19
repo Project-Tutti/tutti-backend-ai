@@ -185,14 +185,14 @@ nano .env
 ```env
 GCP_PROJECT_ID=여기에값입력
 AI_SERVER_API_KEY=콜백인증키
-REDIS_HOST=localhost
+REDIS_HOST=host.docker.internal
 REDIS_PORT=6380
 REDIS_PASSWORD=xxx...
 REDIS_TLS=false
 LOG_LEVEL=info
 ```
 
-> **Note**: `REDIS_HOST=localhost`, `REDIS_PORT=6380`은 온프레미스 서버에서 `cloudflared access tcp`가 GKE 내부 Redis를 `localhost:6380`으로 프록시하기 때문입니다.
+> **Note**: `REDIS_HOST=host.docker.internal`, `REDIS_PORT=6380`은 온프레미스 서버에서 `cloudflared access tcp`가 GKE 내부 Redis를 `0.0.0.0:6380`으로 프록시하기 때문입니다.
 
 ### 6.3 서비스 시작
 
