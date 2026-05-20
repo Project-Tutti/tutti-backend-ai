@@ -19,9 +19,16 @@ import torch
 import torch.nn as nn
 import pretty_midi
 from collections import defaultdict
-from transformers import AutoConfig, AutoModelForCausalLM
+from transformers import AutoConfig, AutoModelForCausalLM, StaticCache
 
 logger = logging.getLogger(__name__)
+
+# 조성(key-scale) 페널티용 상수
+_MAJOR_SCALE    = frozenset([0, 2, 4, 5, 7, 9, 11])
+_MINOR_SCALE    = frozenset([0, 2, 3, 5, 7, 8, 10])
+_ROOT_MAP       = {"C":0,"C#":1,"D":2,"D#":3,"E":4,"F":5,
+                   "F#":6,"G":7,"G#":8,"A":9,"A#":10,"B":11}
+KEY_PENALTY_STR = 2.0
 
 # ──────────────────────────────────────────────
 # 악기 설정 테이블
@@ -213,7 +220,7 @@ def build_v5_vocab(actual_vocab_size: int = 682):
     for r in roots:
         for m in [":maj", ":min"]: vocab[f"KEY_{r}{m}"] = len(vocab)
     vocab["KEY_NONE"] = len(vocab)
-    
+
     # vocab_size가 682 이상일 때만 기존 TARGET_ 토큰 3종 포함
     if actual_vocab_size >= 682:
         for p in [40, 68, 73]: vocab[f"TARGET_{p}"] = len(vocab)
@@ -252,11 +259,19 @@ def load_model(ckpt_path, vocab_size, vocab, device):
     config = AutoConfig.from_pretrained(MODEL_NAME)
     config.vocab_size              = vocab_size
     config.pad_token_id            = vocab["PAD"]
-    # max_position_embeddings는 입력 프롬프트 + 생성 토큰의 최대 길이
-    config.max_position_embeddings = 128000
+    # MAX_CTX(8192) + 생성 토큰 + 강제 주입 여유분. 학습 SEQ_LEN=2048 → RoPE 외삽
+    config.max_position_embeddings = 16384
     config.sliding_window          = None
 
-    model = AutoModelForCausalLM.from_config(config)
+    # 학습과 동일한 Flash Attention 2 활성화 (실패 시 SDPA 폴백)
+    try:
+        config._attn_implementation = "flash_attention_2"
+        model = AutoModelForCausalLM.from_config(config)
+        logger.info("Flash Attention 2 활성화")
+    except (ImportError, ValueError, RuntimeError) as e:
+        logger.warning(f"Flash Attention 2 실패 ({e}), SDPA로 폴백")
+        config._attn_implementation = "sdpa"
+        model = AutoModelForCausalLM.from_config(config)
     model = model.to(torch.bfloat16)
     model.model.embed_tokens = nn.Embedding(vocab_size, config.hidden_size).to(torch.bfloat16)
     model.lm_head            = nn.Linear(config.hidden_size, vocab_size, bias=False).to(torch.bfloat16)
@@ -311,7 +326,7 @@ def midi_to_bar_tokens(midi_path, genre, VOCAB):
         bpb = ts_changes[ts_idx].numerator if ts_idx < len(ts_changes) else 4
         acc += res * bpb
         bar_start_ticks.append(acc)
-    
+
     # 여유분 추가 확보
     for _ in range(5):
         bt = pm.tick_to_time(acc)
@@ -560,8 +575,10 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
                              temperature, top_p,
                              VOCAB, VOCAB_R, source_pm, device,
                              monophonic=True, progress_hook=None):
-    SEQ_LEN  = 128000
-    MAX_CTX  = SEQ_LEN - 119808
+    MAX_CTX  = 8192
+    MAX_NEW  = 600                              # 생성 토큰 + 강제 주입 여유분
+    MAX_CACHE_LEN = MAX_CTX + MAX_NEW
+    SEQ_LEN  = MAX_CACHE_LEN                    # 로그 표시용
     all_notes         = []
     gen_bar_tokens    = {}
 
@@ -571,13 +588,37 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
     target_past_ratio = context_bars / (context_bars + future_bars) if (context_bars + future_bars) > 0 else 0.5
     total_windows = (max_bar // window_bars) + 1
     last_reported_pct = 4  # 5부터 전송 시작하도록 초기화
-    
+
     logger.info(f"   총 {max_bar+1}마디 / 윈도우 {window_bars}마디 → {total_windows}번 생성")
     logger.info(f"   단선율 강제: {'ON' if monophonic else 'OFF (폴리포닉)'}")
+
+    # ── 윈도우 무관 사전 계산 (이전에는 매 윈도우마다 재생성) ──
+    pitch_token_ids = torch.tensor(
+        [VOCAB[f"PITCH={p}"] for p in range(128)], device=device)
+    invalid_pitch_mask = (
+        (torch.arange(128, device=device) < pitch_min) |
+        (torch.arange(128, device=device) > pitch_max))
+    invalid_pitch_token_ids = pitch_token_ids[invalid_pitch_mask]
+    pitch_indices = torch.arange(128, device=device)
+    LEAP_THRESHOLD = 12
+    LEAP_ALPHA = 0.5
+    cur_in = torch.zeros((1, 1), dtype=torch.long, device=device)
+
+    # ── StaticCache: KV 캐시를 사전 할당하여 윈도우 간 재사용 ──
+    # cache_position이 윈도우마다 0부터 다시 증가하므로, 이전 윈도우의 stale 값은
+    # 인과 마스크에 의해 자동으로 무시됨 (별도 reset 불필요).
+    static_cache = StaticCache(
+        config=model.config,
+        max_batch_size=1,
+        max_cache_len=MAX_CACHE_LEN,
+        device=device,
+        dtype=torch.bfloat16,
+    )
 
     for win_idx in range(total_windows):
         win_start = win_idx * window_bars
         win_end   = min(win_start + window_bars - 1, max_bar)
+        actual_window_bars = win_end - win_start + 1
 
         if win_start > max_bar:
             break
@@ -654,10 +695,10 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
             pkv = out.past_key_values
             # [중요] Prefill의 마지막 결과물을 첫 번째 루프의 입력으로 예약
             logits = out.logits[0, -1, :].float()
-                
+
             # 3. 생성 기록(gen_toks) 업데이트
             gen_toks.extend(injected)
-                
+
 
             bar_count      = 1
             target_playing = True   # 첫 INST 강제 주입 후 발음 중
@@ -666,12 +707,35 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
             cur_in = torch.zeros((1, 1), dtype=torch.long, device=device)
 
             # 루프 진입 전 마지막 토큰으로 초기값 설정
-            cur_in[0, 0] = gen_toks[-1] 
+            cur_in[0, 0] = gen_toks[-1]
 
             # (이전 답변에서 추가한 피치 마스킹용 텐서들도 이 위치에 배치됨)
             pitch_token_ids = torch.tensor([VOCAB[f"PITCH={p}"] for p in range(128)], device=device)
             invalid_pitch_mask = (torch.arange(128, device=device) < pitch_min) | (torch.arange(128, device=device) > pitch_max)
             invalid_pitch_token_ids = pitch_token_ids[invalid_pitch_mask]
+
+            # 도약 페널티용 사전 계산 (단선율 악기만 적용)
+            last_gen_pitch = None
+            LEAP_THRESHOLD = 12   # 이 이내(옥타브)는 페널티 없음
+            LEAP_ALPHA = 0.5      # 페널티 강도 계수
+            pitch_indices = torch.arange(128, device=device)
+
+            # 조성(key-scale) 페널티 텐서 사전 계산
+            key_pitch_penalty = None
+            for _t in first_bar:
+                _t_name = VOCAB_R.get(_t, "")
+                if _t_name.startswith("KEY_") and _t_name != "KEY_NONE" and ":" in _t_name[4:]:
+                    _root_str, _mode = _t_name[4:].split(":", 1)
+                    _root = _ROOT_MAP.get(_root_str)
+                    if _root is not None:
+                        _scale = _MAJOR_SCALE if _mode == "maj" else _MINOR_SCALE
+                        _valid_pcs = {(_root + _i) % 12 for _i in _scale}
+                        _pen = torch.zeros(128, device=device)
+                        for _p in range(128):
+                            if (_p % 12) not in _valid_pcs:
+                                _pen[_p] = KEY_PENALTY_STR
+                        key_pitch_penalty = _pen
+                    break
 
             for step in range(512):
                 # ── 1% 단위 진행도 보간 (추론 로직 무관) ──
@@ -689,13 +753,23 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
                 # for pitch in range(128):
                 #     if pitch < pitch_min or pitch > pitch_max:
                 #         logits[VOCAB[f"PITCH={pitch}"]] = -1e9
-                
+
                 # 수정된 피치 마스킹 (미리 계산된 마스크 사용)
                 logits[invalid_pitch_token_ids] = -1e9
 
                 # 2. 단선율 강제 (monophonic=True일 때만)
                 if monophonic and target_playing:
                     logits[INST_TARGET_ID] = -1e9
+
+                # 3. 도약 페널티: 직전 피치로부터 먼 PITCH 토큰에 확률 감쇠 (단선율만)
+                if monophonic and last_gen_pitch is not None:
+                    intervals = (pitch_indices - last_gen_pitch).abs()
+                    penalties = -LEAP_ALPHA * torch.clamp(intervals - LEAP_THRESHOLD, min=0).float()
+                    logits[pitch_token_ids] += penalties
+
+                # 4. 조성 외 음표 소프트 페널티 (key-scale, -2.0 감쇠)
+                if key_pitch_penalty is not None:
+                    logits[pitch_token_ids] -= key_pitch_penalty
 
                 logits  = logits / temperature
                 probs   = torch.softmax(logits, dim=-1)
@@ -710,6 +784,11 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
                 next_tok = s_idx[torch.multinomial(s_probs, 1)].item()
                 gen_toks.append(next_tok)
 
+                # 도약 페널티용 피치 추적
+                tok_name = VOCAB_R.get(next_tok, "")
+                if tok_name.startswith("PITCH="):
+                    last_gen_pitch = int(tok_name.split("=")[1])
+
                 # 3. 단선율 상태 업데이트
                 if next_tok == INST_TARGET_ID:
                     target_playing = True
@@ -720,14 +799,14 @@ def generate_sliding_window(model, header, bar_tokens, max_bar,
                 if next_tok == VOCAB["BAR_START"]:
                     bar_count += 1
                     target_playing = False
-                    if bar_count > window_bars:
+                    if bar_count > actual_window_bars:
                         break
                 if next_tok in (VOCAB["PIECE_END"], VOCAB["EOS"]):
                     break
 
-                # 루프 내 텐서 생성 금지(이미 만들어온 텐서 로드로 수정)     
+                # 루프 내 텐서 생성 금지(이미 만들어온 텐서 로드로 수정)
                 # cur_in = torch.tensor([[next_tok]], dtype=torch.long, device=device)
-                
+
                 # (수정) 새로운 텐서를 만들지 않고, 미리 만든 바구니에 숫자만 갈아끼기
                 cur_in[0, 0] = next_tok
 
@@ -868,19 +947,8 @@ def postprocess(notes, target_name, monophonic=True):
         if 0 < gap < LEGATO_GAP:
             notes[i]["end"] = notes[i+1]["start"]
 
-    # 도약 완화 코드 주석처리
-    # # 6. 단선율 악기만: 큰 도약 완화
-    # if monophonic:
-    #     MAX_INTERVAL = 12
-    #     notes = sorted(notes, key=lambda x: x["start"])
-    #     for i in range(1, len(notes)):
-    #         interval = notes[i]["pitch"] - notes[i-1]["pitch"]
-    #         if abs(interval) > MAX_INTERVAL:
-    #             if interval > 0: notes[i]["pitch"] -= 12
-    #             else:            notes[i]["pitch"] += 12
-    #             if not (cfg["pitch_min"] <= notes[i]["pitch"] <= cfg["pitch_max"]):
-    #                 if interval > 0: notes[i]["pitch"] += 12
-    #                 else:            notes[i]["pitch"] -= 12
+    # 6. 도약 완화: 생성 중 확률 감쇠로 처리 (generate_sliding_window 내 LEAP 페널티)
+    #    → 후처리에서의 옥타브 이동 보정은 더 이상 사용하지 않음
 
     # 7. 최종 음역 재확인
     notes = [n for n in notes
@@ -904,25 +972,25 @@ def save_midi(notes, source_pm, output_path, target_prog, target_name,
     """
     if not original_song_path:
         raise ValueError("original_song_path is required for Mido Append strategy")
-        
+
     import mido
     mid = mido.MidiFile(original_song_path)
-    
+
     if mid.type == 0:
         mid.type = 1
 
     display_name = actual_instrument_name or target_name
     new_track = mido.MidiTrack()
     new_track.append(mido.MetaMessage('track_name', name=f"AI_{display_name}", time=0))
-    
+
     is_drum = (target_prog == 128)
     if is_drum:
         msg_prog = 0
     else:
         msg_prog = actual_midi_program if actual_midi_program is not None else target_prog
-    
+
     msg_prog = max(0, min(127, msg_prog))
-    
+
     if is_drum:
         msg_chan = 9  # 드럼 채널 설정
     else:
@@ -931,7 +999,7 @@ def save_midi(notes, source_pm, output_path, target_prog, target_name,
             for msg in track:
                 if hasattr(msg, 'channel'):
                     used_channels.add(msg.channel)
-        
+
         free_channels = [c for c in range(16) if c != 9 and c not in used_channels]
         if free_channels:
             msg_chan = free_channels[0]
@@ -939,30 +1007,30 @@ def save_midi(notes, source_pm, output_path, target_prog, target_name,
             fallback = [c for c in range(16) if c != 9]
             msg_chan = fallback[0] if fallback else 0
             logger.warning(f"MIDI 채널 포화 상태. AI 악기가 채널 {msg_chan}을 일부 공유합니다.")
-            
+
     new_track.append(mido.Message('program_change', program=msg_prog, channel=msg_chan, time=0))
-    
+
     events = []
     for n in notes:
         st_tick = int(round(source_pm.time_to_tick(n["start"])))
         en_tick = int(round(source_pm.time_to_tick(n["end"])))
         pitch = max(0, min(127, int(n["pitch"])))
         vel = max(1, min(127, int(n["velocity"])))
-        
+
         events.append((st_tick, 'note_on', pitch, vel))
         events.append((en_tick, 'note_off', pitch, 0))
-        
+
     events.sort(key=lambda x: (x[0], 0 if x[1] == 'note_off' else 1))
-    
+
     last_tick = 0
     for tick, msg_type, pitch, vel in events:
         delta = max(0, tick - last_tick)
         new_track.append(mido.Message(msg_type, note=pitch, velocity=vel, time=delta, channel=msg_chan))
         last_tick = tick
-        
+
     new_track.append(mido.MetaMessage('end_of_track', time=0))
     mid.tracks.append(new_track)
-    
+
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     mid.save(output_path)
     logger.info(f"✅ 원본 보존 기반 병합 저장 완료: {output_path} (생성된 노트 {len(notes)}개)")
@@ -985,11 +1053,11 @@ def run_arrangement(
     actual_midi_program: int = None,
 ) -> str:
     """편곡 추론 실행 - 외부에서 호출되는 API 엔트리포인트."""
-    # 고정 하이퍼파라미터 (2-2-2 셋업 반영)
-    context_bars = 8
-    window_bars = 4
-    future_bars = 0
-    top_p = 0.90
+    # 고정 하이퍼파라미터 (musical quality 최적화)
+    context_bars = 12
+    window_bars  = 4
+    future_bars  = 4
+    top_p        = 0.82
     # seed = 42
     # 고정 시드 해제: 매번 다채로운 생성을 위해 무작위 시드 부여(non-deterministic)
     seed = random.randint(0, 2147483647)
@@ -1002,8 +1070,8 @@ def run_arrangement(
     random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+        # 추론은 비결정적이어도 무방 → cuDNN 자동튜너 활성화
+        torch.backends.cudnn.benchmark = True
 
     # TARGET_CONFIG에서 타겟 정보 수집
     target_name = "acoustic_grand_piano"
